@@ -43,6 +43,28 @@ set -eu
 # .../cron`. Same defensive default sync-kata-plugin.sh already uses.
 export HERMES_HOME="${HERMES_HOME:-/opt/data}"
 
+# KATA-14: the base image's own stage2 boot loads $HERMES_HOME/.env with
+# python-dotenv's override=True — a value persisted there from an earlier
+# manual `hermes env set` (or a stale volume) silently wins over whatever
+# is configured as a container/Railway env var, with only a log line to
+# say so ("value wins at runtime"). Keep the three api_server keys this
+# script's caller (Railway) is the source of truth for in sync with .env
+# on every boot, so a redeploy can't be shadowed by a leftover value from
+# before this platform was configured. No-ops when the container doesn't
+# set a given key (leaves .env, and therefore Hermes's own precedent
+# behavior, untouched) or when .env doesn't exist yet.
+ENV_FILE="$HERMES_HOME/.env"
+if [ -f "$ENV_FILE" ]; then
+  for _key in API_SERVER_KEY API_SERVER_HOST API_SERVER_PORT; do
+    eval "_val=\${${_key}:-}"
+    if [ -n "$_val" ]; then
+      grep -v "^${_key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" 2>/dev/null || true
+      mv "${ENV_FILE}.tmp" "$ENV_FILE"
+      echo "${_key}=${_val}" >> "$ENV_FILE"
+    fi
+  done
+fi
+
 BACKEND="${TERMINAL_BACKEND:-modal}"
 MODEL="${HERMES_MODEL:-openai/gpt-5.6-luna}"
 
