@@ -6,11 +6,48 @@ on:
   pull_request:
 
 jobs:
-  pytest:
+  python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - id: find
+        run: |
+          dirs=$(find . -name pyproject.toml -not -path './.git/*' -not -path '*/node_modules/*' -not -path '*/.venv/*' | xargs -r -n1 dirname | sort -u | tr '\n' ' ')
+          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
+          echo "found: ${dirs:-none}"
       - uses: astral-sh/setup-uv@v5
+        if: steps.find.outputs.dirs != ''
         with:
           python-version: "3.13"
-      - run: uv run --extra dev pytest -q
+      - if: steps.find.outputs.dirs != ''
+        run: |
+          for d in ${{ steps.find.outputs.dirs }}; do
+            echo "::group::pytest $d"
+            ( cd "$d" && uv run --extra dev pytest -q )
+            echo "::endgroup::"
+          done
+      - if: steps.find.outputs.dirs == ''
+        run: echo "No pyproject.toml in this tree - no Python suite to run."
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        run: |
+          dirs=$(find . -name package.json -not -path './.git/*' -not -path '*/node_modules/*' | xargs -r -n1 dirname | sort -u | tr '\n' ' ')
+          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
+          echo "found: ${dirs:-none}"
+      - uses: actions/setup-node@v4
+        if: steps.find.outputs.dirs != ''
+        with:
+          node-version: "22"
+      - if: steps.find.outputs.dirs != ''
+        run: |
+          for d in ${{ steps.find.outputs.dirs }}; do
+            echo "::group::npm $d"
+            ( cd "$d" && (npm ci || npm install) && npm test --if-present && npm run build --if-present )
+            echo "::endgroup::"
+          done
+      - if: steps.find.outputs.dirs == ''
+        run: echo "No package.json in this tree - no Node suite to run."
