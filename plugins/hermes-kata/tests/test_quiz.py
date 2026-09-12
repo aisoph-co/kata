@@ -26,6 +26,7 @@ from hermes_kata.quiz import (
     build_reveal,
     handle_reveal_command,
     record_answer,
+    render_reveal_blocks,
     source_chip_text,
     submit_quiz_answer,
 )
@@ -37,6 +38,7 @@ QUESTION = DailyQuestion(
     prompt="Before `add_posting_currency` goes back in, what must change?",
     options=["Chunk the backfill and run it off-peak", "Nothing — just re-run it", "Add a lock timeout"],
     concept_id="concept-migrations",
+    correct_index=0,
     source=SourceChip(label="PAY-1863", thread_ref="sprint-42 · reverted migration"),
 )
 
@@ -210,9 +212,76 @@ def test_handle_reveal_command_is_presenter_triggered_not_a_timer_and_refuses_a_
     first = handle_reveal_command(
         session, requested_by_is_manager=True, concept_to_schedule="concept-migrations", leaderboard=[]
     )
-    assert any(o["line"].startswith("4 of 9 picked") for o in first["options"])
+    question_block_text = first["blocks"][1]["text"]["text"]
+    assert "*4*  ✅ *Chunk the backfill and run it off-peak*" in question_block_text
 
     with pytest.raises(ValueError):
         handle_reveal_command(
             session, requested_by_is_manager=True, concept_to_schedule="concept-migrations", leaderboard=[]
         )
+
+
+def test_render_reveal_blocks_matches_the_kata_reveal_blockkit_template():
+    session = _session()
+    _answer_the_ferry_beat(session)
+    reveal = build_reveal(
+        session,
+        concept_to_schedule="concept-migrations",
+        leaderboard=[LeaderboardEntry(display_name="Daniel Okonkwo", score=42)],
+    )
+
+    message = render_reveal_blocks(session, reveal, team_note="Chunking showed up; the lock itself didn't.")
+
+    header_text = message["blocks"][0]["text"]["text"]
+    assert header_text.startswith("*Before `add_posting_currency` goes back in, what must change?*")
+    assert "`4 of 9`" in header_text
+    assert "⚠️" not in header_text  # 4 of 9 (44%) is above the low-turnout threshold
+
+    question_text = message["blocks"][1]["text"]["text"]
+    assert "`" + "█" * 4 + "░" * 6 + "`" in question_text  # 4 of 9 audience -> round(10 * 4/9) = 4 filled cells
+    assert "✅ *Chunk the backfill and run it off-peak*" in question_text
+    assert "Nothing — just re-run it" in question_text and "✅ *Nothing" not in question_text
+
+    assert message["blocks"][2] == {"type": "divider"}
+    assert message["blocks"][3]["text"]["text"] == "> *Team note.* Chunking showed up; the lock itself didn't."
+    assert "*Leaderboard*" in message["blocks"][4]["text"]["text"]
+    assert "`1`  *Daniel Okonkwo* · 42" in message["blocks"][4]["text"]["text"]
+    assert message["blocks"][-1]["type"] == "context"
+
+
+def test_render_reveal_blocks_warns_on_a_low_correct_rate():
+    session = _session()
+    record_answer(session, AUDIENCE[0], 2, confidence=2)  # only 1 of 9 picks the correct option
+    reveal = build_reveal(session, concept_to_schedule="concept-migrations", leaderboard=[])
+
+    message = render_reveal_blocks(session, reveal)
+
+    header_text = message["blocks"][0]["text"]["text"]
+    assert "⚠️ `0 of 9`" in header_text
+
+
+def test_render_reveal_blocks_omits_team_note_and_leaderboard_blocks_when_not_supplied():
+    session = _session()
+    _answer_the_ferry_beat(session)
+    reveal = build_reveal(session, concept_to_schedule="concept-migrations", leaderboard=[])
+
+    message = render_reveal_blocks(session, reveal)
+
+    block_types = [block["type"] for block in message["blocks"]]
+    assert block_types == ["section", "section", "divider", "context"]
+
+
+def test_render_reveal_blocks_never_attributes_an_answer_to_a_person():
+    session = _session()
+    _answer_the_ferry_beat(session)
+    reveal = build_reveal(
+        session,
+        concept_to_schedule="concept-migrations",
+        leaderboard=[LeaderboardEntry(display_name="Daniel Okonkwo", score=42)],
+    )
+
+    message = render_reveal_blocks(session, reveal, team_note="Chunking showed up.")
+
+    dumped = str(message)
+    for person_id in AUDIENCE:
+        assert person_id not in dumped

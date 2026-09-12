@@ -3,9 +3,11 @@
 Wires the jobs this build ships (spec §1, §2, §4, §6, §8) into a live
 `PluginContext`: identity binding (`pre_gateway_dispatch`), the `tools.json`
 tool catalog, the mcq/msq `clarify`-rendering system-prompt section, the
-Socratic guardrails system-prompt text, the digest cron jobs (due-rep,
-team-quiz, teach-back), and — last, and unable to take any of the above down
-if it fails — the `socratic-debate` skill (see
+Socratic guardrails system-prompt text, the `kata_reveal` team-results tool
+and its rendering system-prompt section (`team_reveal.py` — AGCTM-69's
+fallback until a live quiz exists to reveal instead), the digest cron jobs
+(due-rep, team-quiz, teach-back), and — last, and unable to take any of the
+above down if it fails — the `socratic-debate` skill (see
 `_register_socratic_debate_skill_safely`).
 
 Loaded by Hermes as `import plugins.hermes-kata` would be if the package name
@@ -37,6 +39,7 @@ try:
     from .hermes_kata.identity import SessionIdentityCache, SessionStoreHandle, register_identity_hook
     from .hermes_kata.mcq import register_mcq_rendering_section
     from .hermes_kata.quiz import ensure_quiz_thread_identity
+    from .hermes_kata.team_reveal import register_team_reveal
     from .hermes_kata.tools import JobIdentityRegistry, make_identity_resolver, register_tools
 except ImportError:
     from hermes_kata.client import LearningServiceClient
@@ -45,6 +48,7 @@ except ImportError:
     from hermes_kata.identity import SessionIdentityCache, SessionStoreHandle, register_identity_hook
     from hermes_kata.mcq import register_mcq_rendering_section
     from hermes_kata.quiz import ensure_quiz_thread_identity
+    from hermes_kata.team_reveal import register_team_reveal
     from hermes_kata.tools import JobIdentityRegistry, make_identity_resolver, register_tools
 
 
@@ -53,15 +57,13 @@ def register(ctx: Any) -> None:
     cache = SessionIdentityCache()
     store_handle = SessionStoreHandle()
     job_identities = JobIdentityRegistry()
+    resolve_identity = make_identity_resolver(cache, job_identities, store_handle)
 
     register_identity_hook(ctx, client, cache, store_handle)
-    register_tools(
-        ctx,
-        client,
-        resolve_identity=make_identity_resolver(cache, job_identities, store_handle),
-    )
+    register_tools(ctx, client, resolve_identity=resolve_identity)
     register_mcq_rendering_section(ctx)
     register_guardrails_section(ctx)
+    register_team_reveal(ctx)
     _register_digest_jobs(ctx, client, job_identities)
     _register_socratic_debate_skill_safely(ctx)
 
