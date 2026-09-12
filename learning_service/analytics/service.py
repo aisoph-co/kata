@@ -1,12 +1,8 @@
-"""Team analytics computation (spec §Team analytics) and focus/audit
-persistence (spec §Privacy and retention → "Audit"; §API `POST /team/focus`).
-
-Concept/item/review state (`concept_state`, `card_state`, the review log) is
-read through the same `LearningRepository` `/me/*` and `select_next_items`
-use (see `engine/repository.py`; this is always `SqlLearningRepository` in
-this build), so team analytics reads the identical source of truth rather
-than standing up a second one. Roster (`person.manager_id`, `is_operator`)
-is read from Postgres via `roster.service.get_subtree_ids`.
+"""Team-level metrics (spec §Team analytics, the metric table) and `focus`
+persistence (spec §API, `POST /team/focus`). Reads `concept_state`/
+`card_state`/`review` through the same snapshot helpers `engine.selection`
+uses, and the roster through `roster.service.get_subtree_ids`, so team
+analytics has exactly one source of truth for each.
 """
 
 from __future__ import annotations
@@ -16,94 +12,66 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from learning_service.analytics.models import AuditEntry
-from learning_service.engine.analytics import person_learning_summary, subtree_retention
-from learning_service.engine.models import AT_RISK_THRESHOLD, P_INIT
-from learning_service.engine.repository import LearningRepository
-from learning_service.engine.selection import build_prereqs_of, is_mastered, is_unlocked, p_known_for
-from learning_service.roster.models import Focus as DbFocus
+from learning_service.analytics.summary import person_learning_summary, subtree_retention
+from learning_service.curriculum import service as curriculum_service
+from learning_service.curriculum.models import Concept, ConceptEdge, Item
+from learning_service.engine.models import AT_RISK_THRESHOLD, P_INIT, CardState, ConceptState, Focus, Review, as_utc
+from learning_service.engine.selection import (
+    build_prereqs_of,
+    card_states_for,
+    concept_states_by_id,
+    is_mastered,
+    is_unlocked,
+    new_available_count,
+    p_known_for,
+)
 
 RECOMMENDATION_LIMIT = 5
 DEFAULT_DIGEST_DAYS = 7
 
 
-def _as_utc(dt: datetime) -> datetime:
-    # SQLite drops tzinfo on round-trip even for `DateTime(timezone=True)`;
-    # every value here is written in UTC, so a naive value is UTC too.
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-
-
-# ---------------------------------------------------------------------------
-# Audit
-# ---------------------------------------------------------------------------
-
-
-async def write_audit(session: AsyncSession, *, actor_person_id: str, subject_scope: str, endpoint: str) -> None:
-    session.add(AuditEntry(actor_person_id=actor_person_id, subject_scope=subject_scope, endpoint=endpoint))
-    await session.commit()
-
-
-async def list_audit_for_subtree(session: AsyncSession, *, actor_ids: list[str]) -> list[AuditEntry]:
-    result = await session.execute(
-        select(AuditEntry).where(AuditEntry.actor_person_id.in_(actor_ids)).order_by(AuditEntry.at.desc())
-    )
+async def reviews_for(session: AsyncSession, person_id: str) -> list[Review]:
+    result = await session.execute(select(Review).where(Review.person_id == person_id))
     return list(result.scalars().all())
 
 
 # ---------------------------------------------------------------------------
-# Per-concept / per-person metrics (spec §Team analytics, the metric table)
+# Per-concept / per-person metrics
 # ---------------------------------------------------------------------------
 
 
-def is_at_risk(repo: LearningRepository, person_id: str, concept_id: str, now: datetime) -> bool:
-    if p_known_for(repo, person_id, concept_id) >= AT_RISK_THRESHOLD:
+def is_at_risk(
+    states: dict[str, ConceptState], card_states: list[CardState], items_by_id: dict[str, Item], concept_id: str, now: datetime
+) -> bool:
+    if p_known_for(states, concept_id) >= AT_RISK_THRESHOLD:
         return False
-    for card in repo.card_states_for(person_id):
-        if card.due_at > now:
+    for card in card_states:
+        if as_utc(card.due_at) > now:
             continue
-        item = repo.get_item(card.item_id)
+        item = items_by_id.get(card.item_id)
         if item is not None and item.concept_id == concept_id:
             return True
     return False
 
 
-def due_count_for_concept(repo: LearningRepository, person_id: str, concept_id: str, now: datetime) -> int:
-    count = 0
-    for card in repo.card_states_for(person_id):
-        if card.due_at > now:
-            continue
-        item = repo.get_item(card.item_id)
-        if item is not None and item.concept_id == concept_id:
-            count += 1
-    return count
-
-
-def due_count_for_person(
-    repo: LearningRepository,
-    person_id: str,
-    concepts: list,
-    prereqs_of: dict,
-    now: datetime,
-) -> int:
-    card_states = repo.card_states_for(person_id)
-    overdue_count = sum(1 for card in card_states if card.due_at <= now)
-    reviewed_item_ids = {card.item_id for card in card_states}
-    new_available_count = 0
-    for concept in concepts:
-        if not is_unlocked(repo, person_id, concept.id, prereqs_of) or is_mastered(repo, person_id, concept):
-            continue
-        for item in repo.published_items(concept.id):
-            if item.id not in reviewed_item_ids:
-                new_available_count += 1
-    return overdue_count + new_available_count
-
-
-def concept_summary(repo: LearningRepository, concept, subtree_ids: list[str], now: datetime) -> dict:
+async def concept_summary(
+    session: AsyncSession, concept: Concept, subtree_ids: list[str], items_by_id: dict[str, Item], now: datetime
+) -> dict:
     if not subtree_ids:
         return {"concept_id": concept.id, "mean_mastery": P_INIT, "share_mastered": 0.0, "at_risk_count": 0}
-    p_knowns = [p_known_for(repo, pid, concept.id) for pid in subtree_ids]
-    mastered_count = sum(1 for pid in subtree_ids if is_mastered(repo, pid, concept))
-    at_risk_count = sum(1 for pid in subtree_ids if is_at_risk(repo, pid, concept.id, now))
+
+    p_knowns = []
+    mastered_count = 0
+    at_risk_count = 0
+    for pid in subtree_ids:
+        states = await concept_states_by_id(session, pid)
+        p_knowns.append(p_known_for(states, concept.id))
+        if is_mastered(states, concept):
+            mastered_count += 1
+        card_states = await card_states_for(session, pid)
+        if is_at_risk(states, card_states, items_by_id, concept.id, now):
+            at_risk_count += 1
+
     return {
         "concept_id": concept.id,
         "mean_mastery": sum(p_knowns) / len(subtree_ids),
@@ -112,63 +80,55 @@ def concept_summary(repo: LearningRepository, concept, subtree_ids: list[str], n
     }
 
 
-def team_retention(repo: LearningRepository, person_ids: list[str]) -> dict:
-    """The pooled counterpart of `person_learning_summary`'s retention
-    bands, for `GET /team/overview` — an individual's d30 band is
-    frequently thin, but the team-aggregate band usually clears
-    `_MIN_RETENTION_SAMPLES`. Callers pass whichever ids the team curve
-    should cover; `analytics/router.py` includes the acting manager's own
-    reviews alongside their subtree, unlike the `people` read below, which
-    deliberately excludes the caller."""
-    pooled = [review for pid in person_ids for review in repo.reviews_for(pid)]
+async def team_retention(session: AsyncSession, person_ids: list[str]) -> dict:
+    """QA-style team-aggregate retention for `GET /team/overview`: pooled
+    across whichever ids the caller passes (`team.py` includes the acting
+    manager's own reviews alongside their subtree, unlike the `people` read,
+    which deliberately excludes the caller)."""
+    pooled: list[Review] = []
+    for pid in person_ids:
+        pooled.extend(await reviews_for(session, pid))
     return subtree_retention(pooled)
 
 
-def person_summary(
-    repo: LearningRepository, person_id: str, concepts: list, now: datetime, window_days: int
-) -> dict:
+async def person_summary(session: AsyncSession, person_id: str, concepts: list[Concept], now: datetime, window_days: int) -> dict:
     window_start = now - timedelta(days=window_days)
-    reviews = repo.reviews_for(person_id)
+    reviews = await reviews_for(session, person_id)
     learning = person_learning_summary(reviews)
 
-    completed_in_window = sum(1 for r in reviews if _parse(r["reviewed_at"]) >= window_start)
-    # "reviews due" has no stored history once a card is reviewed again (its
-    # `due_at` advances), so due-in-window is approximated as completions in
-    # the window plus cards still overdue right now (spec §Team analytics,
-    # "adherence": "1.0 when nothing was due").
-    still_overdue = sum(1 for c in repo.card_states_for(person_id) if c.due_at <= now)
+    completed_in_window = sum(1 for r in reviews if as_utc(r.reviewed_at) >= window_start)
+    card_states = await card_states_for(session, person_id)
+    still_overdue = sum(1 for c in card_states if as_utc(c.due_at) <= now)
     due_in_window = completed_in_window + still_overdue
     adherence = 1.0 if due_in_window == 0 else completed_in_window / due_in_window
 
-    # "concepts newly mastered in the trailing 7 days": concept_state has no
-    # timestamped mastery-crossing event, so this counts concepts currently
-    # mastered whose most recent review (the one that could have crossed the
-    # threshold) falls inside the window.
+    states = await concept_states_by_id(session, person_id)
     velocity = 0
     for concept in concepts:
-        state = repo.concept_state_for(person_id, concept.id)
+        state = states.get(concept.id)
         if state is None or state.last_review_at is None:
             continue
-        if is_mastered(repo, person_id, concept) and _as_utc(state.last_review_at) >= window_start:
+        if is_mastered(states, concept) and as_utc(state.last_review_at) >= window_start:
             velocity += 1
 
     return {
         "adherence": adherence,
         "velocity": velocity,
         "last_active": learning["last_active"],
-        # Concept-level /team/* views still never see an answer or a
-        # review's own detail — these are the same scalar aggregates
-        # /me/progress.summary reports.
         "bypass_rate": learning["bypass_rate"],
         "retention": learning["retention"],
         "calibration": learning["calibration"],
     }
 
 
-def _parse(reviewed_at) -> datetime:
-    if isinstance(reviewed_at, datetime):
-        return _as_utc(reviewed_at)
-    return datetime.fromisoformat(str(reviewed_at).replace("Z", "+00:00"))
+async def due_count_for_person(
+    session: AsyncSession, person_id: str, concepts: list[Concept], prereqs_of: dict, concept_items: dict, now: datetime
+) -> int:
+    card_states = await card_states_for(session, person_id)
+    overdue_count = sum(1 for card in card_states if as_utc(card.due_at) <= now)
+    reviewed_item_ids = {c.item_id for c in card_states}
+    states = await concept_states_by_id(session, person_id)
+    return overdue_count + new_available_count(concepts, states, prereqs_of, concept_items, reviewed_item_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +136,7 @@ def _parse(reviewed_at) -> datetime:
 # ---------------------------------------------------------------------------
 
 
-def _dependents_count(concepts: list, prereq_edges: list, concept_id: str) -> int:
+def _dependents_count(concepts: list[Concept], prereq_edges: list[ConceptEdge], concept_id: str) -> int:
     children_of: dict[str, list[str]] = {c.id: [] for c in concepts}
     for edge in prereq_edges:
         if edge.from_concept_id in children_of:
@@ -193,22 +153,22 @@ def _dependents_count(concepts: list, prereq_edges: list, concept_id: str) -> in
     return len(seen)
 
 
-def build_recommendations(
-    repo: LearningRepository, subtree_ids: list[str], now: datetime, limit: int = RECOMMENDATION_LIMIT
-) -> list[dict]:
-    concepts = repo.list_concepts()
-    prereq_edges = repo.list_edges("prerequisite")
+async def build_recommendations(session: AsyncSession, subtree_ids: list[str], limit: int = RECOMMENDATION_LIMIT) -> list[dict]:
+    concepts = await curriculum_service.list_concepts(session)
+    prereq_edges = await curriculum_service.list_edges(session, kind="prerequisite")
     prereqs_of = build_prereqs_of(concepts, prereq_edges)
 
     if not subtree_ids:
         return []
 
+    states_by_person = {pid: await concept_states_by_id(session, pid) for pid in subtree_ids}
+
     candidates = []
     for concept in concepts:
-        unlocked_count = sum(1 for pid in subtree_ids if is_unlocked(repo, pid, concept.id, prereqs_of))
+        unlocked_count = sum(1 for pid in subtree_ids if is_unlocked(states_by_person[pid], concept.id, prereqs_of))
         if unlocked_count * 2 < len(subtree_ids):
             continue
-        mean_mastery = sum(p_known_for(repo, pid, concept.id) for pid in subtree_ids) / len(subtree_ids)
+        mean_mastery = sum(p_known_for(states_by_person[pid], concept.id) for pid in subtree_ids) / len(subtree_ids)
         dependents = _dependents_count(concepts, prereq_edges, concept.id)
         score = (1 - mean_mastery) * (1 + dependents)
         candidates.append(
@@ -233,29 +193,19 @@ async def create_focus(
     weight: float,
     expires_at: datetime | None,
     set_by: str,
-) -> DbFocus:
-    """Upserts on `(scope_kind, scope_person_id, concept_id)`: a repeated
-    identical POST replaces the existing row's
-    `weight`/`expires_at`/`set_by` rather than adding a new one, so posting
-    the same focus twice always leaves exactly one row and one weight
-    application (otherwise `_focus_weight` would multiply over every
-    duplicate).
-
-    `SqlLearningRepository.load()` reads this table directly — expanding
-    `subtree` scopes into `focuses_for(person_id)` at hydration time — so
-    every request gets a fresh, correct view with no in-process mirror to
-    keep in sync.
-    """
+) -> Focus:
+    """Upserts on `(scope_kind, scope_person_id, concept_id)` — a repeat
+    POST for the same scope+concept replaces `weight`/`expires_at`/`set_by`
+    rather than adding a second row (which would compound the weight in
+    `engine.selection._focus_weight`)."""
     existing = await session.execute(
-        select(DbFocus).where(
-            DbFocus.scope_kind == scope_kind,
-            DbFocus.scope_person_id == scope_person_id,
-            DbFocus.concept_id == concept_id,
+        select(Focus).where(
+            Focus.scope_kind == scope_kind, Focus.scope_person_id == scope_person_id, Focus.concept_id == concept_id
         )
     )
-    focus_row = existing.scalar_one_or_none()
-    if focus_row is None:
-        focus_row = DbFocus(
+    focus = existing.scalar_one_or_none()
+    if focus is None:
+        focus = Focus(
             scope_kind=scope_kind,
             scope_person_id=scope_person_id,
             concept_id=concept_id,
@@ -263,20 +213,19 @@ async def create_focus(
             set_by=set_by,
             expires_at=expires_at,
         )
-        session.add(focus_row)
+        session.add(focus)
     else:
-        focus_row.weight = weight
-        focus_row.expires_at = expires_at
-        focus_row.set_by = set_by
+        focus.weight = weight
+        focus.expires_at = expires_at
+        focus.set_by = set_by
     await session.commit()
-    return focus_row
+    return focus
 
 
-async def delete_focus(session: AsyncSession, *, focus_id: str) -> DbFocus | None:
-    result = await session.execute(select(DbFocus).where(DbFocus.id == focus_id))
-    focus_row = result.scalar_one_or_none()
-    if focus_row is None:
+async def delete_focus(session: AsyncSession, focus_id: str) -> Focus | None:
+    focus = await session.get(Focus, focus_id)
+    if focus is None:
         return None
-    await session.delete(focus_row)
+    await session.delete(focus)
     await session.commit()
-    return focus_row
+    return focus

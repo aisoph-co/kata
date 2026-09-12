@@ -1,7 +1,5 @@
-# Serves the built SPA and proxies /api/* to the learning service, injecting
-# WEB_SERVICE_TOKEN server-side so it never reaches the browser (W1,
-# contract change #7). Deployment (Railway `web` service, D1) sets the env
-# vars this file reads; this file itself ships with the app.
+# PLAN_10: serves the built SPA and proxies /api/* to the learning service,
+# injecting the service token server-side so it never reaches the browser.
 {
 	admin off
 }
@@ -14,12 +12,12 @@
 		respond "ok" 200
 	}
 
-	# Finding #5 (AGCTM-64): e2e auth bypass. The SPA asks this once at load
-	# (useE2ESession) and, on a 200, acts as the named seed learner instead
-	# of going through Auth0. Granted only when this service has
+	# AGCTM-64 finding #5: e2e auth bypass. The SPA asks this once at
+	# load (SessionGate) and, on a 200, acts as the named seed learner
+	# instead of going through Auth0. Granted only when the service has
 	# E2E_AUTH_BYPASS_TOKEN set AND the request carries that exact value —
 	# variable unset (every non-test deployment) means this is a 404 for
-	# everyone, so Screen 1 stays exactly as strict as it was.
+	# everyone, so Screen 1 is exactly as strict as it was.
 	handle /__e2e/session {
 		@bypass expression `{env.E2E_AUTH_BYPASS_TOKEN} != "" && {header.X-E2E-Auth-Bypass} == {env.E2E_AUTH_BYPASS_TOKEN} && {header.X-E2E-Learner-Email} != ""`
 		handle @bypass {
@@ -31,12 +29,12 @@
 
 	# Strip /api, forward to the learning service, and replace whatever
 	# Authorization header the client sent (if any) with the real bearer
-	# token — client-supplied credentials never reach the upstream. The e2e
-	# bypass headers stop here too; the core never sees them.
+	# token — client-supplied credentials never reach the upstream. The
+	# e2e bypass headers stop here too; the core never sees them.
 	handle /api/* {
 		uri strip_prefix /api
 		reverse_proxy {$LEARNING_SERVICE_URL} {
-			header_up Authorization "Bearer {$WEB_SERVICE_TOKEN}"
+			header_up Authorization "Bearer {$LEARNING_SERVICE_TOKEN}"
 			header_up -X-E2E-Auth-Bypass
 			header_up -X-E2E-Learner-Email
 		}

@@ -1,11 +1,15 @@
-"""Kata learning service (spec: docs/superpowers/specs/2026-09-05-learning-
-service-core-design.md in `agents-everywhere-hackathon`).
+"""Kata learning service.
 
-This package lands one dependency layer per Stage 0 issue (KATA-2 "C1"):
-``identity``, ``roster``, and ``curriculum`` — the two leaf packages nothing
-else in the core depends on — plus the app skeleton (``main``, ``db``,
-``serve``) they run on. ``engine``, ``grading``, ``analytics``, ``privacy``,
-and the rest of ``api`` land with the issues that depend on this one.
+Stage 0 core, built incrementally against the frozen contract (v1.2.1,
+`contracts/openapi.yaml`): KATA-2 (this package) lands `identity`, `roster`
+and `curriculum` — the two leaf packages nothing else in the core depends
+on. `engine`, `grading`, `analytics`, `privacy` and the rest of `api` land
+in the follow-up issue that depends on this one.
+
+- ``GET /health`` and ``GET /health/db`` are unauthenticated.
+- Every other route requires ``Authorization: Bearer $SERVICE_TOKEN`` (or
+  ``$WEB_SERVICE_TOKEN``, the web app's own trusted-caller token) and an
+  ``X-Acting-Identity: <platform>:<external_id>[;alt=<alt_id>]`` header.
 """
 
 __version__ = "1.2.1"

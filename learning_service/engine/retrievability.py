@@ -1,6 +1,8 @@
-"""FSRS retrievability (spec §Learning engine, "FSRS"; `py-fsrs` uses the same
-power-law forgetting curve). `due_at` drives "overdue"; retrievability drives
-the order overdue cards are shown in — lowest (most forgotten) first."""
+"""FSRS retrievability (spec §Learning engine, "FSRS"; `py-fsrs` uses the
+same power-law forgetting curve). `due_at` drives "overdue"; retrievability
+drives the order overdue cards are shown in — lowest (most forgotten)
+first (spec §Learning engine, "Next-item selection", step 1).
+"""
 
 from __future__ import annotations
 

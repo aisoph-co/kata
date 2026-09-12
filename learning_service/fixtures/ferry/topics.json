@@ -1,0 +1,299 @@
+{
+  "_note": "Topics per persona (PRD §3 stage 3, AGCTM-12). The topic/role relation is many-to-many: PRD §3 says Kata generates relevant *topics* from context x persona, and the 0:55 team quiz already asks the whole team a concept that belongs to one role's topic. The seeded assignments stay mostly one-per-role so the 0:10 narration stays simple; the shape no longer requires it. A topic is a named subgraph of the course in 2-curriculum/concepts.json — its own concept set plus the prerequisite and related edges that fall inside it. It is deliberately NOT a separate course: one acyclic graph means prerequisite gating still works across topics, and `concepts`/`prerequisite_edges` here load into the core's `concept` and `concept_edge` tables unchanged. `bridges_out` records edges that leave the topic, so a topic is never mistaken for a closed world.",
+  "_fields": {
+    "entry_concept": "where a learner with no review history starts; always the shallowest concept in the topic",
+    "grounded_in": "seed artifacts in 1-context/ that justify this topic existing. A topic with no grounding is a generic curriculum and fails KAT-C1",
+    "bridges_out": "edges from a topic concept to a concept outside the topic — the reason topics are subgraphs, not courses",
+    "personas": "the roles this topic is for — many-to-many with `roles` in 0-team/personas.json. A topic can serve several roles (the ledger migration is the tech lead's and both seniors'), and a role can hold several topics; `roles[].topics` is the same relation from the other side and the two must agree."
+  },
+  "topics": [
+    {
+      "slug": "idempotent-retries",
+      "title": "Retrying a payment without charging twice",
+      "personas": [
+        "junior_swe"
+      ],
+      "why_this_role_this_week": "Sprint 42's theme is 'stop double-charging'. Four of the six juniors have an issue in that cluster, and the code an agent writes for it looks correct either way — the difference is invisible until an incident.",
+      "entry_concept": "idempotency",
+      "concepts": [
+        "idempotency",
+        "payment-state-machine",
+        "retry-safety"
+      ],
+      "prerequisite_edges": [
+        {
+          "from": "idempotency",
+          "to": "retry-safety"
+        },
+        {
+          "from": "payment-state-machine",
+          "to": "retry-safety"
+        }
+      ],
+      "related_edges": [],
+      "bridges_out": [
+        {
+          "from": "idempotency",
+          "to": "webhook-delivery",
+          "kind": "prerequisite"
+        },
+        {
+          "from": "payment-state-machine",
+          "to": "psp-contract-testing",
+          "kind": "prerequisite"
+        },
+        {
+          "from": "retry-safety",
+          "to": "payment-status-communication",
+          "kind": "prerequisite"
+        },
+        {
+          "a": "retry-safety",
+          "b": "webhook-delivery",
+          "kind": "related",
+          "weight": 0.8
+        }
+      ],
+      "grounded_in": [
+        "PAY-1841",
+        "PAY-1847",
+        "PAY-1852",
+        "PAY-1859",
+        "PAY-1872",
+        "sprint-history.md#sprint-42--stop-double-charging-current-112-september"
+      ]
+    },
+    {
+      "slug": "contract-testing-and-provider-drift",
+      "title": "Detecting provider drift before the provider tells you",
+      "personas": [
+        "senior_swe"
+      ],
+      "why_this_role_this_week": "The seniors review the PRs, and an agent-written adapter passes a suite recorded against fixtures nobody re-records. Adyen changed a response field in August and the connector swallowed it for nine days.",
+      "entry_concept": "payment-state-machine",
+      "concepts": [
+        "payment-state-machine",
+        "psp-contract-testing",
+        "webhook-delivery"
+      ],
+      "prerequisite_edges": [
+        {
+          "from": "payment-state-machine",
+          "to": "psp-contract-testing"
+        }
+      ],
+      "related_edges": [],
+      "bridges_out": [
+        {
+          "from": "money-representation",
+          "to": "payment-state-machine",
+          "kind": "prerequisite"
+        },
+        {
+          "from": "idempotency",
+          "to": "webhook-delivery",
+          "kind": "prerequisite"
+        },
+        {
+          "a": "psp-contract-testing",
+          "b": "sca-exemptions",
+          "kind": "related",
+          "weight": 0.5
+        },
+        {
+          "a": "retry-safety",
+          "b": "webhook-delivery",
+          "kind": "related",
+          "weight": 0.8
+        }
+      ],
+      "grounded_in": [
+        "PAY-1834",
+        "PAY-1836",
+        "PAY-1829",
+        "PAY-1831",
+        "sprint-history.md#the-adyen-field-change-august",
+        "repo-excerpts.md#psp-connectorsadyendeclinego--the-nine-day-silent-failure"
+      ]
+    },
+    {
+      "slug": "sca-exemption-change",
+      "title": "The 1 October SCA change, and the engineering under it",
+      "personas": [
+        "pm"
+      ],
+      "why_this_role_this_week": "Shane is writing the merchant comms for a regulatory change nobody else on the team can explain — and is shipping agent-written code alongside it. The topic carries an engineering spine (idempotency, money) on purpose: the PM failure mode is vibe-coding without one, so a topic that is only regulatory would leave it intact.",
+      "entry_concept": "sca-exemptions",
+      "concepts": [
+        "sca-exemptions",
+        "challenge-flow-ux",
+        "idempotency",
+        "money-representation"
+      ],
+      "prerequisite_edges": [
+        {
+          "from": "sca-exemptions",
+          "to": "challenge-flow-ux"
+        }
+      ],
+      "related_edges": [],
+      "bridges_out": [
+        {
+          "from": "idempotency",
+          "to": "retry-safety",
+          "kind": "prerequisite"
+        },
+        {
+          "from": "idempotency",
+          "to": "webhook-delivery",
+          "kind": "prerequisite"
+        },
+        {
+          "from": "money-representation",
+          "to": "payment-state-machine",
+          "kind": "prerequisite"
+        },
+        {
+          "from": "money-representation",
+          "to": "fx-quote-lifecycle",
+          "kind": "prerequisite"
+        },
+        {
+          "a": "psp-contract-testing",
+          "b": "sca-exemptions",
+          "kind": "related",
+          "weight": 0.5
+        },
+        {
+          "a": "challenge-flow-ux",
+          "b": "payment-state-machine",
+          "kind": "related",
+          "weight": 0.5
+        }
+      ],
+      "grounded_in": [
+        "PAY-1870",
+        "PAY-1880",
+        "PAY-1847",
+        "PAY-1855",
+        "company.md#the-live-situation-what-the-team-is-working-on-right-now"
+      ]
+    },
+    {
+      "slug": "changing-a-system-that-cannot-stop",
+      "title": "Evolving a live ledger",
+      "personas": [
+        "tech_lead",
+        "senior_swe"
+      ],
+      "why_this_role_this_week": "The migration was reverted on Tuesday after locking `postings` for 34 seconds in staging, and PAY-1875 — the dry-run harness — is the tech lead's own issue. This is the topic where approving a plausible-looking agent design costs the most.",
+      "entry_concept": "double-entry",
+      "concepts": [
+        "double-entry",
+        "ledger-migrations",
+        "reconciliation"
+      ],
+      "prerequisite_edges": [
+        {
+          "from": "double-entry",
+          "to": "ledger-migrations"
+        },
+        {
+          "from": "double-entry",
+          "to": "reconciliation"
+        }
+      ],
+      "related_edges": [
+        {
+          "a": "ledger-migrations",
+          "b": "reconciliation",
+          "weight": 0.55
+        }
+      ],
+      "bridges_out": [
+        {
+          "from": "fx-quote-lifecycle",
+          "to": "reconciliation",
+          "kind": "prerequisite"
+        },
+        {
+          "from": "reconciliation",
+          "to": "payout-settlement",
+          "kind": "prerequisite"
+        },
+        {
+          "a": "reconciliation",
+          "b": "payout-settlement",
+          "kind": "related",
+          "weight": 0.7
+        }
+      ],
+      "grounded_in": [
+        "PAY-1863",
+        "PAY-1875",
+        "PAY-1877",
+        "PAY-1844",
+        "release-notes.md#reverted",
+        "sprint-history.md#the-reverted-migration-tuesday-8-september"
+      ]
+    },
+    {
+      "slug": "mandated-vs-chosen-in-the-checkout-flow",
+      "title": "Which constraints are real: mandated, technical, or ours",
+      "personas": [
+        "uxd"
+      ],
+      "why_this_role_this_week": "The SCA change on 1 October moves the challenge step, and PAY-1852 puts retry state in front of the customer for the first time. Both are flows where the designer will be told 'we can't do that' — and needs to know when that is true.",
+      "entry_concept": "sca-exemptions",
+      "concepts": [
+        "sca-exemptions",
+        "challenge-flow-ux",
+        "payment-state-machine",
+        "payment-status-communication"
+      ],
+      "prerequisite_edges": [
+        {
+          "from": "sca-exemptions",
+          "to": "challenge-flow-ux"
+        },
+        {
+          "from": "payment-state-machine",
+          "to": "payment-status-communication"
+        }
+      ],
+      "related_edges": [
+        {
+          "a": "challenge-flow-ux",
+          "b": "payment-state-machine",
+          "weight": 0.5
+        }
+      ],
+      "bridges_out": [
+        {
+          "from": "money-representation",
+          "to": "payment-state-machine",
+          "kind": "prerequisite"
+        },
+        {
+          "from": "retry-safety",
+          "to": "payment-status-communication",
+          "kind": "prerequisite"
+        },
+        {
+          "a": "payment-status-communication",
+          "b": "webhook-delivery",
+          "kind": "related",
+          "weight": 0.6
+        }
+      ],
+      "grounded_in": [
+        "PAY-1870",
+        "PAY-1852",
+        "PAY-1826",
+        "PAY-1869",
+        "company.md#architecture-the-team-owns",
+        "release-notes.md#2026-08-22--checkout-api-v510"
+      ]
+    }
+  ]
+}

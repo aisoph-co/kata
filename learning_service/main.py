@@ -1,13 +1,13 @@
-"""FastAPI app for the Kata learning service.
-
-This module lands the app skeleton (health, auth, the acting-identity
-contract) plus this issue's own routers: identity resolution/linking and
-roster import (below), curriculum admin CRUD, topics, and the concept
-graph (registered at the bottom, the same deferred-import pattern used
-throughout so each router can depend on `require_service_token`,
-`acting_identity`, `require_operator`, and `resolve_person_id` defined
-here). Later Stage 0 issues (engine/grading/analytics/privacy, the rest of
-`api`) extend this module with their own routers the same way.
+"""The Kata learning service's core app (spec §API): identity resolution,
+roster admin, curriculum/concept-graph, CI1's ingestion trigger
+(`build-day/issues.md` "CI1", KATA-13), and — as of KATA-3 — the learning
+engine, grading, team analytics, privacy and audit surface: `/me/next`,
+`/me/reviews`, `/me/progress`, `/me/due-summary`, `/me/answers`,
+`/me/notes*`, `/team/*`, and `/admin/replay`. Those live in their own router
+modules (`reviews.py`, `progress.py`, `answers.py`, `notes.py`, `team.py`,
+`admin_replay.py`), included at the bottom of this file the same way
+`admin.py`/`curriculum_admin.py`/`topics.py`/`concept_graph.py`/
+`ingestion.py` already are.
 """
 
 from __future__ import annotations
@@ -15,17 +15,18 @@ from __future__ import annotations
 import os
 import secrets
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from learning_service import __version__
-from learning_service.db import get_session
-from learning_service.engine.openrouter import LLMClient, OpenRouterClient
-from learning_service.engine.sql_repository import SqlLearningRepository
-from learning_service.engine.stub_grader import StubGraderClient
+from learning_service.db import get_session, session_scope
+from learning_service.extraction.client import ExtractionClient, OpenRouterExtractionClient
+from learning_service.extraction.sources import concept_frequency, load_context_issues
+from learning_service.extraction.stub import StubExtractionClient
+from learning_service.identity.models import Base
 from learning_service.identity.schemas import (
     IdentityLinkRequest,
     IdentityOut,
@@ -42,18 +43,76 @@ from learning_service.identity.service import (
 )
 from learning_service.logging_utils import log_unknown_identity, request_logger
 
-app = FastAPI(title="Kata learning service", version=__version__)
+# `learning_service.curriculum.models`, `.engine.models`, `.privacy.models`
+# all share `identity.models.Base` (`Base.metadata.create_all()` below picks
+# them up automatically), but each must still be imported somewhere before
+# that call so its tables register on `Base.metadata` — these imports are
+# that, kept for their side effect.
+from learning_service.curriculum import models as _curriculum_models  # noqa: F401
+from learning_service.engine import models as _engine_models  # noqa: F401
+from learning_service.privacy import models as _privacy_models  # noqa: F401
+
+
+def _build_extraction_client() -> ExtractionClient:
+    # CI1's `GET /admin/ingest` (`ingestion.py`) needs an LLM to classify a
+    # co-occurring concept pair and draft an item — `LEARNING_LLM=stub`
+    # selects a deterministic `StubExtractionClient` (its frequency table
+    # built from the same seeded `issues.jsonl` ingestion itself reads) for
+    # demos and tests; unset stays the real `OpenRouterExtractionClient`. A
+    # missing `OPENROUTER_API_KEY` only fails ingestion at request time
+    # (surfaced as `event: error`), not startup.
+    if os.environ.get("LEARNING_LLM") == "stub":
+        return StubExtractionClient(concept_frequency(load_context_issues()))
+    return OpenRouterExtractionClient()
+
+
+# Constructed once at import time so every request reuses the same client
+# instead of rebuilding it (and, in the stub case, re-reading the fixture)
+# per call.
+_extraction_client: ExtractionClient = _build_extraction_client()
+
+
+def get_extraction_client() -> ExtractionClient:
+    return _extraction_client
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # No alembic chain in this package yet (KATA-2's follow-up issue adds
+    # `engine`/`analytics` tables and is the natural point to introduce real
+    # migrations). Until then, a configured `DATABASE_URL` gets its schema
+    # from `Base.metadata.create_all()` — safe to run on every boot since it
+    # only creates tables that don't already exist.
+    if os.environ.get("DATABASE_URL"):
+        async with session_scope() as session:
+            conn = await session.connection()
+            await conn.run_sync(Base.metadata.create_all)
+            # PostgreSQL makes DDL transactional.  `session_scope()` closes
+            # without an implicit commit, so persist the schema before the
+            # seed opens its separate session below.
+            await session.commit()
+
+        # `LEARNING_SEED=ferry` (spec §Deployment, "Demo seed"): loads the
+        # named scenario once per database, so the golden demo's 60 days of
+        # history are there the first time anything reads it. Unset is a
+        # no-op; `learning_service.seed` is idempotent across restarts.
+        scenario_name = os.environ.get("LEARNING_SEED")
+        if scenario_name:
+            from learning_service.seed import seed
+
+            async with session_scope() as session:
+                await seed(session, scenario_name)
+    yield
+
+
+app = FastAPI(title="Kata learning service", version=__version__, lifespan=_lifespan)
 
 
 @app.middleware("http")
 async def _log_request(request: Request, call_next):
     # `/health` is Railway's liveness probe — it fires every few seconds and
     # would otherwise drown out the requests an operator actually cares
-    # about, so it's the one path excluded here. Every other request logs
-    # one INFO line: method, path, status code, and the acting identity
-    # straight off the header (never parsed/validated here — this line must
-    # still log something useful for requests that never reach the
-    # `acting_identity` dependency).
+    # about, so it's the one path excluded here.
     status_code = 500
     try:
         response = await call_next(request)
@@ -93,11 +152,11 @@ class ActingIdentity:
 
 
 def require_service_token(request: Request) -> None:
-    # Two trusted callers share this dependency: Hermes's `SERVICE_TOKEN`
-    # and the web app's own `WEB_SERVICE_TOKEN`, checked identically — the
-    # acting identity, not the token, says who is calling (e.g.
-    # `X-Acting-Identity: web:<subject>`). Unset tokens are dropped, so a
-    # misconfigured service still fails closed.
+    # Two trusted callers share this dependency (web-app-design.md Contract
+    # change #7): Hermes's `SERVICE_TOKEN` and the web app's own
+    # `WEB_SERVICE_TOKEN`, checked identically — the acting identity, not the
+    # token, says who is calling (e.g. `X-Acting-Identity: web:<subject>`).
+    # Unset tokens are dropped, so a misconfigured service still fails closed.
     valid_tokens = [t for t in (os.environ.get("SERVICE_TOKEN", ""), os.environ.get("WEB_SERVICE_TOKEN", "")) if t]
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
@@ -139,9 +198,12 @@ async def resolve_person_id(
     identity: ActingIdentity = Depends(acting_identity),
     session: AsyncSession = Depends(get_session),
 ) -> str:
-    """Every `/me/*` route's acting person: the acting person is resolved
-    before any handler runs; unknown identities are rejected (spec
-    §Architecture, "Acting person")."""
+    """Every `/me/*` route's acting person (spec §Identity: "the acting
+    person is resolved before any handler runs... unknown identities are
+    rejected") — exact `platform`+`external_id`, then `alt_id`. An
+    unresolvable identity is `403 unknown_identity`, same as `/team/*` and
+    `require_operator`.
+    """
     person = await resolve_identity(
         session, platform=identity.platform, external_id=identity.external_id, alt_id=identity.alt_id
     )
@@ -156,56 +218,36 @@ async def resolve_person_id(
     return person.id
 
 
-async def get_repository(session: AsyncSession = Depends(get_session)) -> AsyncIterator[SqlLearningRepository]:
-    """Every `/me/*`, `/team/*`, and `/admin/replay` route's engine state
-    (`review`, `card_state`, `concept_state`, curriculum, focus): one
-    `SqlLearningRepository` per request, hydrated from the same session
-    `resolve_person_id` already resolves identities through, so engine
-    state and roster/identity state are always the same transaction.
-    """
-    repo = SqlLearningRepository(session)
-    await repo.load()
-    yield repo
-
-
-def _build_llm_client() -> LLMClient:
-    # `LEARNING_LLM=stub` swaps in a deterministic grader so demos and tests
-    # never call OpenRouter or spend money; unset, the default stays
-    # OpenRouter. A missing `OPENROUTER_API_KEY` only fails a `short_answer`
-    # review at grading time, not startup.
-    if os.environ.get("LEARNING_LLM") == "stub":
-        return StubGraderClient()
-    return OpenRouterClient()
-
-
-# Constructed once at import time.
-_llm_client: LLMClient = _build_llm_client()
-
-
-def get_llm_client() -> LLMClient:
-    return _llm_client
-
-
 @app.get("/health")
 async def health() -> dict:
+    from learning_service.seed import SCENARIOS
+
+    seed_env = os.environ.get("LEARNING_SEED")
     return {
         "status": "ok",
         "service": "learning",
         "version": __version__,
         "database": "configured" if os.environ.get("DATABASE_URL") else "unconfigured",
+        "seed": seed_env if seed_env in SCENARIOS else "none",
     }
 
 
 @app.get("/health/db")
-async def health_db(session: AsyncSession = Depends(get_session)) -> dict:
-    # A real round trip, not just "DATABASE_URL is set" (that's `/health`'s
-    # job) — Railway's deploy done-check (RUNBOOK.md "Services") wants proof
-    # Postgres is actually reachable, e.g. right after a migration.
+async def health_db() -> dict:
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise _error(503, "database_unconfigured", "DATABASE_URL is not set")
+    import asyncpg
+
     try:
-        await session.execute(text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001 — any DB failure is this route's one job to report
-        raise _error(503, "database_unavailable", str(exc)) from exc
-    return {"status": "ok", "database": "reachable"}
+        conn = await asyncpg.connect(url, timeout=10)
+        try:
+            version = await conn.fetchval("select version()")
+        finally:
+            await conn.close()
+    except Exception as exc:  # noqa: BLE001 — surface the driver's message
+        raise _error(503, "database_unreachable", str(exc)) from exc
+    return {"status": "ok", "postgres": version.split(" on ")[0]}
 
 
 @app.get("/whoami")
@@ -226,17 +268,25 @@ async def identities_resolve(
     _: None = Depends(require_service_token),
     session: AsyncSession = Depends(get_session),
 ) -> PersonSummary:
-    person = await resolve_identity(session, platform=body.platform, external_id=body.external_id, alt_id=body.alt_id)
+    person = await resolve_identity(
+        session, platform=body.platform, external_id=body.external_id, alt_id=body.alt_id
+    )
     if person is None:
         # Only path that ever sees this identity — it arrives in the
         # request body, not `X-Acting-Identity` — so this warning is the
         # sole record of what failed to resolve.
         log_unknown_identity(
-            path=request.url.path, platform=body.platform, external_id=body.external_id, alt_id=body.alt_id
+            path=request.url.path,
+            platform=body.platform,
+            external_id=body.external_id,
+            alt_id=body.alt_id,
         )
         raise _error(403, "unknown_identity", "no person matches this identity")
     return PersonSummary(
-        id=person.id, display_name=person.display_name, email=person.email, is_operator=person.is_operator,
+        id=person.id,
+        display_name=person.display_name,
+        email=person.email,
+        is_operator=person.is_operator,
         role=person.role,
     )
 
@@ -287,9 +337,9 @@ async def me_link_code(
     return LinkCodeResponse(code=link_code.code, expires_at=link_code.expires_at)
 
 
-from learning_service.roster.router import router as _roster_router  # noqa: E402
+from learning_service.admin import router as _admin_router  # noqa: E402
 
-app.include_router(_roster_router)
+app.include_router(_admin_router)
 
 from learning_service.curriculum_admin import router as _curriculum_admin_router  # noqa: E402
 
@@ -303,15 +353,15 @@ from learning_service.concept_graph import router as _concept_graph_router  # no
 
 app.include_router(_concept_graph_router)
 
-from learning_service.engine.router import router as _engine_router  # noqa: E402
+from learning_service.ingestion import router as _ingestion_router  # noqa: E402
 
-app.include_router(_engine_router)
+app.include_router(_ingestion_router)
 
-from learning_service.admin import router as _admin_router  # noqa: E402
+from learning_service.reviews import router as _reviews_router  # noqa: E402
 
-app.include_router(_admin_router)
+app.include_router(_reviews_router)
 
-from learning_service.progress.router import router as _progress_router  # noqa: E402
+from learning_service.progress import router as _progress_router  # noqa: E402
 
 app.include_router(_progress_router)
 
@@ -323,6 +373,10 @@ from learning_service.notes import router as _notes_router  # noqa: E402
 
 app.include_router(_notes_router)
 
-from learning_service.analytics.router import router as _analytics_router  # noqa: E402
+from learning_service.team import router as _team_router  # noqa: E402
 
-app.include_router(_analytics_router)
+app.include_router(_team_router)
+
+from learning_service.admin_replay import router as _admin_replay_router  # noqa: E402
+
+app.include_router(_admin_replay_router)

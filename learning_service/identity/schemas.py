@@ -18,6 +18,7 @@ class PersonSummary(BaseModel):
     display_name: str
     email: str
     is_operator: bool
+    # Contract v1.2.0 (web-app-design.md Contract change #8).
     role: str | None = None
 
 

@@ -1,9 +1,8 @@
 import { useSyncExternalStore } from 'react'
 
 /**
- * Minimal external store, no extra dependency — good enough for the small
- * bits of cross-component session state W1 needs (role confirmation, the
- * resolved web session).
+ * Minimal external store, no extra dependency. Good enough for the
+ * persona selection and the Backstage call log.
  */
 export function createStore<T>(initial: T) {
   let state = initial
@@ -12,7 +11,8 @@ export function createStore<T>(initial: T) {
   return {
     getState: () => state,
     setState: (updater: T | ((prev: T) => T)) => {
-      state = typeof updater === 'function' ? (updater as (prev: T) => T)(state) : updater
+      state =
+        typeof updater === 'function' ? (updater as (prev: T) => T)(state) : updater
       for (const listener of listeners) listener()
     },
     subscribe: (listener: () => void) => {

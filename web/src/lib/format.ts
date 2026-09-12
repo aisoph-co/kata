@@ -1,31 +1,45 @@
-/** Shared display formatting for W2's two screens. */
-
-export function formatPercent(value: number | null): string {
-  return value === null ? '—' : `${Math.round(value * 100)}%`
+export function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
-export function formatSigned(value: number | null, digits = 2): string {
-  if (value === null) return '—'
-  const sign = value >= 0 ? '+' : '−'
-  return `${sign}${Math.abs(value).toFixed(digits)}`
+export function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`
 }
 
-/**
- * Relative-time delta for a tile's "last changed" badge (frame 09: bypass
- * tile reads "just now" right after a rep). General-purpose — not seeded
- * data specific — so it reads correctly whenever `last_active` actually is
- * recent, live demo included.
- */
-export function formatRelativeDelta(iso: string | null, now: number = Date.now()): string | null {
-  if (!iso) return null
-  const then = new Date(iso).getTime()
-  if (Number.isNaN(then)) return null
-  const seconds = Math.max(0, Math.round((now - then) / 1000))
-  if (seconds < 60) return 'just now'
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.round(hours / 24)
-  return `${days}d ago`
+/** `m:ss`, for the Connections screen's "ingesting" badge (KATA-11). */
+export function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+/** Locked scale (PLAN_06): 0–0.5 red-ish, 0.5–0.85 amber, ≥0.85 green. */
+export function masteryTier(p: number): 'low' | 'mid' | 'high' {
+  if (p >= 0.85) return 'high'
+  if (p >= 0.5) return 'mid'
+  return 'low'
+}
+
+export const MASTERY_THRESHOLD = 0.85
+
+// Fields the service strips from item payloads before a learner sees them
+// (agency-v1 learning_service/engine/models.py ANSWER_KEY_FIELDS) — surfaced
+// in the Backstage drawer so the "nothing hidden, except what's genuinely
+// hidden" point is visible, not just asserted.
+export const ANSWER_KEY_FIELDS = ['correct_index', 'correct_indices', 'answer', 'reference', 'rubric', 'explanation']
+
+export const RATING_LABEL: Record<number, string> = {
+  1: 'Again',
+  2: 'Hard',
+  3: 'Good',
+  4: 'Easy',
 }

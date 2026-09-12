@@ -1,10 +1,9 @@
-"""`/admin/courses`, `/admin/concepts`, `/admin/edges`, `/admin/items`,
-`/admin/topics` (spec §Curriculum, §API): operator CRUD for the concept
-graph.
+"""`/admin/courses`, `/admin/concepts`, `/admin/edges`, `/admin/items` (US-C1,
+AGCTM-38, spec §Curriculum, §API): operator CRUD for the concept graph.
 
 `is_operator` is required on every route here (spec §API, "Authentication").
-Prerequisite edge writes are validated acyclic within a course -> 422
-`cycle` on violation (`curriculum.service._would_cycle`); `POST
+Prerequisite edge writes are validated acyclic within a course -> 422 `cycle`
+on violation (`curriculum.service._would_cycle`); `POST
 /admin/items/{id}/publish` flips an item from `draft` to `published`.
 """
 
@@ -429,8 +428,6 @@ async def update_item(
         item = await curriculum_service.update_item(session, item_id, prompt=body.prompt, payload=body.payload)
     except curriculum_service.NotFoundError as exc:
         raise _not_found(exc, "item") from exc
-    except curriculum_service.ValidationError as exc:
-        raise _error(422, "validation_error", str(exc)) from exc
     return _item_out(item)
 
 
@@ -461,7 +458,7 @@ async def delete_item(
 
 
 # ---------------------------------------------------------------------------
-# Topics
+# Topics (Contract v1.2.0)
 # ---------------------------------------------------------------------------
 
 
@@ -475,8 +472,9 @@ class TopicCreateRequest(BaseModel):
     entry_concept_id: str
     concept_ids: list[str] = Field(min_length=1)
     # Emptiness is checked in `curriculum_service.create_topic`, not with
-    # `Field(min_length=1)`, so a bad value returns this route's own
-    # `validation_error` envelope instead of FastAPI's own error body.
+    # `Field(min_length=1)`: a pydantic-level failure returns FastAPI's own
+    # error body, and `openapi.yaml` documents this route's 422 as this
+    # service's `ValidationError` envelope for every other bad field.
     grounded_in: list[str] = []
 
 

@@ -1,17 +1,20 @@
 """FSRS-6 `card_state` update via `py-fsrs` (spec §Learning engine, "FSRS").
 
-`enable_fuzzing` stays off: AGCTM-36's replay must derive a byte-identical
+`enable_fuzzing` stays off: KAT-X4's replay must derive byte-identical
 `card_state` from the same `review` log, and py-fsrs's fuzz draws from the
-unseeded global `random` module rather than anything we control.
+unseeded global `random` module rather than anything this service controls.
+
+`review_card` is a pure function of `(existing, rating, reviewed_at)` —
+no database — so `engine.replay` can fold a whole review history through it
+without a session in hand.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
 import fsrs
-
-from learning_service.engine.models import CardState
 
 DESIRED_RETENTION = 0.9
 
@@ -22,7 +25,19 @@ _STATE_TO_NAME = {fsrs.State.Learning: "learning", fsrs.State.Review: "review", 
 _NAME_TO_STATE = {name: state for state, name in _STATE_TO_NAME.items()}
 
 
-def _to_card(existing: CardState | None) -> fsrs.Card:
+@dataclass(frozen=True)
+class CardUpdate:
+    stability: float
+    difficulty: float
+    due_at: datetime
+    state: str  # "learning" | "review" | "relearning"
+    step: int | None
+    reps: int
+    lapses: int
+    last_review_at: datetime
+
+
+def _to_card(existing: CardUpdate | None) -> fsrs.Card:
     if existing is None:
         return fsrs.Card()
     return fsrs.Card(
@@ -35,20 +50,12 @@ def _to_card(existing: CardState | None) -> fsrs.Card:
     )
 
 
-def review_card(
-    existing: CardState | None,
-    person_id: str,
-    item_id: str,
-    rating: int,
-    reviewed_at: datetime,
-) -> CardState:
-    """Advance `existing` (or a fresh card, if this is the first review) with
-    `rating` at `reviewed_at`, returning the new `card_state` row."""
+def review_card(existing: CardUpdate | None, rating: int, reviewed_at: datetime) -> CardUpdate:
+    """Advance `existing` (or a fresh card, if this is the first review)
+    with `rating` at `reviewed_at`."""
     card = _to_card(existing)
     new_card, _log = _SCHEDULER.review_card(card, _RATING_BY_VALUE[rating], reviewed_at)
-    return CardState(
-        person_id=person_id,
-        item_id=item_id,
+    return CardUpdate(
         stability=new_card.stability,
         difficulty=new_card.difficulty,
         due_at=new_card.due,

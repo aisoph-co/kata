@@ -1,111 +1,67 @@
 """The one step that advances `card_state` and `concept_state` for a review
-(spec §Learning engine). `POST /me/reviews` calls it with a freshly graded
-result; `POST /admin/replay` (AGCTM-36) calls it with a stored `review` row.
-Same function, so replayed state is identical to live state by construction
-rather than by keeping two implementations in sync.
+(spec §Learning engine, "Replay"): `POST /me/reviews` calls `apply_review`
+with a freshly graded result; `POST /admin/replay` calls `rebuild_derived_
+state` to truncate and rebuild both tables from the whole `review` log.
 
-`rebuild_derived_state` is the shared truncate-and-rebuild step `POST
-/admin/replay` and the golden seed (PLAN_05 PR-B) both use: it only touches
-the repository's in-memory dicts (via `clear_derived_state`/`add_card_state`/
-`add_concept_state`, all synchronous on both `InMemoryLearningRepository` and
-`SqlLearningRepository`); a SQL-backed repository additionally persists the
-result durably — see `engine/sql_repository.py`.
+Both fold the same `(reviewed_at, id)`-ordered history through the same
+`bkt.update_p_known`/`fsrs_engine.review_card` pure functions, so replayed
+state is identical to live state by construction (KAT-X4) rather than by
+keeping two implementations in sync: `apply_review` always recomputes a
+card's/concept's whole state from its full review history (including the
+row about to be recorded, not yet inserted), never an O(1) increment on top
+of the previous snapshot — the review volumes here (tens of learners) make
+the O(n) re-fold cheap, and it means there is exactly one code path for
+"what is this card's/concept's state", live or replayed.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from learning_service.engine.bkt import update_p_known
-from learning_service.engine.fsrs_engine import review_card
-from learning_service.engine.models import P_INIT, CardState, ConceptState
-from learning_service.engine.repository import InMemoryLearningRepository
+from learning_service.engine.fsrs_engine import CardUpdate, review_card
+from learning_service.engine.models import P_INIT, CardState, ConceptState, Review, as_utc
+
+_CardEntry = tuple[datetime, str, int]  # (reviewed_at, review_id, rating)
+_ConceptEntry = tuple[datetime, str, int, str]  # (reviewed_at, review_id, rating, kind)
 
 
-def parse_reviewed_at(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def _fold_card_state(
-    repo: InMemoryLearningRepository, person_id: str, item_id: str, rating: int, reviewed_at: datetime, review_id: str
-) -> CardState:
-    """Recompute `card_state` for one item from its whole review history
-    (already-recorded rows plus the one in progress), in the same
-    `(reviewed_at, id)` order `rebuild_derived_state` uses. Only needed when
-    the incoming review is *not* the latest one on record for this item (see
-    `apply_review`) — the ordinary case stays the O(1) incremental update
-    below.
-
-    `review_id` must be the review's own real id (the same one that will end
-    up in the `review` log), not a placeholder: an exact `reviewed_at` tie
-    against an already-recorded row is broken by `id`, same as
-    `rebuild_derived_state`'s sort key, so a fake tiebreak here would sort
-    this review differently than a later `/admin/replay` will.
-
-    `review_id` may or may not already be among `repo.all_reviews()`: a live
-    submission (`POST /me/reviews`) calls this before its review is
-    appended to the log, so it supplies an entry no row yet has; `POST
-    /admin/replay` (`rebuild_derived_state`, below) calls this while
-    iterating the log it is rebuilding *from*, so the review is always
-    already a row. Either way this must fold in exactly one entry per
-    review — never zero (a live tie silently dropped) and never two (the
-    same review double-counted during replay, which used to raise instead;
-    KAT-X4 regression, AE Reviewer `Verdict: fix`).
-    """
-    rows = [r for r in repo.all_reviews() if r["person_id"] == person_id and r["item_id"] == item_id]
-    entries = [(parse_reviewed_at(r["reviewed_at"]), str(r.get("id", "")), r["rating"]) for r in rows]
-    if not any(entry_id == review_id for _, entry_id, _ in entries):
-        entries.append((reviewed_at, review_id, rating))
-    entries.sort(key=lambda e: (e[0], e[1]))
-
-    card: CardState | None = None
-    for ts, _id, entry_rating in entries:
-        card = review_card(card, person_id, item_id, entry_rating, ts)
+def _fold_card(entries: Sequence[_CardEntry]) -> CardUpdate:
+    card: CardUpdate | None = None
+    for _reviewed_at, _review_id, rating in sorted(entries):
+        card = review_card(card, rating, _reviewed_at)
     assert card is not None
     return card
 
 
-def _fold_concept_state(
-    repo: InMemoryLearningRepository,
-    person_id: str,
-    concept_id: str,
-    kind: str,
-    rating: int,
-    reviewed_at: datetime,
-    review_id: str,
-) -> ConceptState:
-    """`concept_state` counterpart to `_fold_card_state`: BKT's `p_known`
-    update is sequential too, so an out-of-order insert needs every review
-    on record for this concept (across all its items) re-folded in order,
-    not just appended on top of the current snapshot. Same `review_id`
-    may-or-may-not-already-be-logged handling as `_fold_card_state` — see
-    its docstring."""
-    rows = []
-    for r in repo.all_reviews():
-        if r["person_id"] != person_id:
-            continue
-        item = repo.get_item(r["item_id"])
-        if item is not None and item.concept_id == concept_id:
-            rows.append(r)
-    entries = [(parse_reviewed_at(r["reviewed_at"]), str(r.get("id", "")), r["rating"], r["kind"]) for r in rows]
-    if not any(entry_id == review_id for _, entry_id, _, _ in entries):
-        entries.append((reviewed_at, review_id, rating, kind))
-    entries.sort(key=lambda e: (e[0], e[1]))
-
+def _fold_concept(entries: Sequence[_ConceptEntry]) -> tuple[float, int, datetime | None]:
     p_known = P_INIT
     reviews = 0
     last_review_at: datetime | None = None
-    for ts, _id, entry_rating, entry_kind in entries:
-        p_known = update_p_known(p_known, entry_kind, entry_rating >= 3)
+    for reviewed_at, _review_id, rating, kind in sorted(entries):
+        p_known = update_p_known(p_known, kind, rating >= 3)
         reviews += 1
-        last_review_at = ts
-    return ConceptState(
-        person_id=person_id, concept_id=concept_id, p_known=p_known, reviews=reviews, last_review_at=last_review_at
-    )
+        last_review_at = reviewed_at
+    return p_known, reviews, last_review_at
 
 
-def apply_review(
-    repo: InMemoryLearningRepository,
+def _apply_card_update(card_state: CardState, update: CardUpdate) -> None:
+    card_state.stability = update.stability
+    card_state.difficulty = update.difficulty
+    card_state.due_at = update.due_at
+    card_state.state = update.state
+    card_state.step = update.step
+    card_state.reps = update.reps
+    card_state.lapses = update.lapses
+    card_state.last_review_at = update.last_review_at
+
+
+async def apply_review(
+    session: AsyncSession,
     *,
     person_id: str,
     item_id: str,
@@ -115,93 +71,94 @@ def apply_review(
     reviewed_at: datetime,
     review_id: str,
 ) -> tuple[CardState, ConceptState]:
-    existing_card = repo.card_states.get((person_id, item_id))
-    # A live review is normally the newest one for its item/concept (server
-    # time only moves forward), so the incremental update below — apply on
-    # top of the current snapshot — matches a full chronological rebuild by
-    # construction. That assumption breaks two ways: (1) the review log
-    # already has a *later* `reviewed_at` on record for this item/concept
-    # (e.g. seeded history dated after the live submission's wall-clock
-    # time) — folding on top would silently rewrite the wrong (earlier) end
-    # of the timeline; (2) an *equal* `reviewed_at` is on record — the
-    # canonical order `rebuild_derived_state` uses is `(reviewed_at, id)`,
-    # so which of two same-instant reviews comes first depends on `id`, not
-    # on which one happened to be applied first live. Using `<=` (not `<`)
-    # below routes both cases through the same full-history fold `/admin/
-    # replay` does, just scoped to the one item/concept an out-of-order or
-    # tied insert can affect, so it stays exact without a full-repository
-    # rebuild on every request. (KAT-X4 regression: two live reviews sharing
-    # a `reviewed_at` whose `id` order differs from arrival order used to
-    # diverge from replay under a strict `<`.)
-    if (
-        existing_card is not None
-        and existing_card.last_review_at is not None
-        and reviewed_at <= existing_card.last_review_at
-    ):
-        new_card = _fold_card_state(repo, person_id, item_id, rating, reviewed_at, review_id)
-    else:
-        new_card = review_card(existing_card, person_id, item_id, rating, reviewed_at)
-    repo.add_card_state(new_card)
-
-    existing_concept_state = repo.concept_state_for(person_id, concept_id)
-    if (
-        existing_concept_state is not None
-        and existing_concept_state.last_review_at is not None
-        and reviewed_at <= existing_concept_state.last_review_at
-    ):
-        new_concept_state = _fold_concept_state(repo, person_id, concept_id, kind, rating, reviewed_at, review_id)
-    else:
-        prior_p_known = existing_concept_state.p_known if existing_concept_state is not None else P_INIT
-        # `correct = rating >= 3` uniformly (spec §Learning engine, "BKT"; see
-        # engine/grading.py) so replay never needs the original grading inputs.
-        new_p_known = update_p_known(prior_p_known, kind, rating >= 3)
-
-        new_concept_state = ConceptState(
-            person_id=person_id,
-            concept_id=concept_id,
-            p_known=new_p_known,
-            reviews=(existing_concept_state.reviews if existing_concept_state is not None else 0) + 1,
-            last_review_at=reviewed_at,
+    """Recomputes `card_state` for `(person_id, item_id)` and `concept_state`
+    for `(person_id, concept_id)` from the full review history for each key,
+    including the review about to be recorded (`review_id` must not yet be
+    in the `review` table — the caller inserts it after this returns)."""
+    item_rows = (
+        await session.execute(
+            select(Review.reviewed_at, Review.id, Review.rating).where(
+                Review.person_id == person_id, Review.item_id == item_id
+            )
         )
-    repo.add_concept_state(new_concept_state)
-    return new_card, new_concept_state
+    ).all()
+    item_entries: list[_CardEntry] = [(as_utc(r.reviewed_at), r.id, r.rating) for r in item_rows]
+    item_entries.append((reviewed_at, review_id, rating))
+    card_update = _fold_card(item_entries)
 
-
-def rebuild_derived_state(repo: InMemoryLearningRepository) -> dict[str, int]:
-    repo.clear_derived_state()
-
-    ordered_reviews = sorted(
-        repo.all_reviews(),
-        key=lambda review: (review["person_id"], parse_reviewed_at(review["reviewed_at"]), str(review.get("id", ""))),
-    )
-    for review in ordered_reviews:
-        item = repo.get_item(review["item_id"])
-        if item is None:
-            continue
-        _, new_concept_state = apply_review(
-            repo,
-            person_id=review["person_id"],
-            item_id=review["item_id"],
-            concept_id=item.concept_id,
-            kind=review["kind"],
-            rating=review["rating"],
-            reviewed_at=parse_reviewed_at(review["reviewed_at"]),
-            review_id=str(review.get("id", "")),
+    concept_rows = (
+        await session.execute(
+            select(Review.reviewed_at, Review.id, Review.rating, Review.kind).where(
+                Review.person_id == person_id, Review.concept_id == concept_id
+            )
         )
-        # `GET /me/history` (PLAN_08): backfill both fields onto the review
-        # dict in place — `ordered_reviews` holds the same dict objects as
-        # `repo.reviews`, so this mutation is visible to callers reading the
-        # log afterwards (`reviews_for`) without a second pass. Sorting this
-        # loop globally by `(person_id, reviewed_at, id)` keeps each
-        # concept's own subsequence chronological too, so the incremental
-        # branch in `apply_review` runs here (not the out-of-order fold),
-        # meaning `new_concept_state.p_known` is exactly this review's
-        # post-state, not some later review's.
-        review["concept_id"] = item.concept_id
-        review["p_known_after"] = new_concept_state.p_known
+    ).all()
+    concept_entries: list[_ConceptEntry] = [(as_utc(r.reviewed_at), r.id, r.rating, r.kind) for r in concept_rows]
+    concept_entries.append((reviewed_at, review_id, rating, kind))
+    p_known, reviews_count, last_review_at = _fold_concept(concept_entries)
 
+    card_state = await session.get(CardState, (person_id, item_id))
+    if card_state is None:
+        card_state = CardState(person_id=person_id, item_id=item_id, stability=0, difficulty=0, due_at=reviewed_at)
+        session.add(card_state)
+    _apply_card_update(card_state, card_update)
+
+    concept_state = await session.get(ConceptState, (person_id, concept_id))
+    if concept_state is None:
+        concept_state = ConceptState(person_id=person_id, concept_id=concept_id)
+        session.add(concept_state)
+    concept_state.p_known = p_known
+    concept_state.reviews = reviews_count
+    concept_state.last_review_at = last_review_at
+
+    return card_state, concept_state
+
+
+async def rebuild_derived_state(session: AsyncSession) -> dict[str, int]:
+    """`POST /admin/replay` (spec §Learning engine, "Replay"): truncates
+    `card_state`/`concept_state` and rebuilds them from `review` in
+    `(person_id, reviewed_at, id)` order."""
+    await session.execute(delete(CardState))
+    await session.execute(delete(ConceptState))
+
+    rows = (
+        await session.execute(
+            select(
+                Review.person_id, Review.item_id, Review.concept_id, Review.kind, Review.rating, Review.reviewed_at, Review.id
+            ).order_by(Review.person_id, Review.reviewed_at, Review.id)
+        )
+    ).all()
+
+    card_groups: dict[tuple[str, str], list[_CardEntry]] = {}
+    concept_groups: dict[tuple[str, str], list[_ConceptEntry]] = {}
+    for row in rows:
+        reviewed_at = as_utc(row.reviewed_at)
+        card_groups.setdefault((row.person_id, row.item_id), []).append((reviewed_at, row.id, row.rating))
+        concept_groups.setdefault((row.person_id, row.concept_id), []).append(
+            (reviewed_at, row.id, row.rating, row.kind)
+        )
+
+    for (person_id, item_id), entries in card_groups.items():
+        update = _fold_card(entries)
+        card_state = CardState(person_id=person_id, item_id=item_id, stability=0, difficulty=0, due_at=update.due_at)
+        _apply_card_update(card_state, update)
+        session.add(card_state)
+
+    for (person_id, concept_id), entries in concept_groups.items():
+        p_known, reviews_count, last_review_at = _fold_concept(entries)
+        session.add(
+            ConceptState(
+                person_id=person_id,
+                concept_id=concept_id,
+                p_known=p_known,
+                reviews=reviews_count,
+                last_review_at=last_review_at,
+            )
+        )
+
+    await session.commit()
     return {
-        "replayed_reviews": len(ordered_reviews),
-        "card_state_count": len(repo.card_states),
-        "concept_state_count": len(repo.concept_states),
+        "replayed_reviews": len(rows),
+        "card_state_count": len(card_groups),
+        "concept_state_count": len(concept_groups),
     }
