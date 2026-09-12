@@ -1,7 +1,7 @@
 """Lightweight stand-ins for the real Hermes plugin API surface, shaped to
 match the calls this plugin makes (`ctx.register_tool`, `ctx.register_hook`,
 `ctx.register_system_prompt_section`, `ctx.register_skill`,
-`ctx.cron.jobs.create_job`) and the `pre_gateway_dispatch` hook kwargs
+`ctx.cron.jobs.create_job`/`.get_job`) and the `pre_gateway_dispatch` hook kwargs
 (`event`, `gateway`, `session_store`) as documented in `hermes_cli/
 plugins.py`'s `VALID_HOOKS`. Not the real Hermes — importing it isn't
 possible outside a Hermes install — but a contract double these tests
@@ -34,6 +34,12 @@ class FakeCronJobs:
         self.calls.append(job)
         self.jobs[name] = job
         return job
+
+    def get_job(self, name: str) -> Optional[dict]:
+        # Read side of the same store `create_job` writes — stands in for
+        # the (unconfirmed against a live Hermes) `cron.jobs.get_job` read
+        # API `tools.cron_job_recipient_lookup` calls, KATA-24 fix round 3.
+        return self.jobs.get(name)
 
 
 class FakeCron:

@@ -270,6 +270,44 @@ def test_a_cron_triggered_tool_call_resolves_via_kata_job_identities_env(plugin_
     assert seen[0]["identity"].external_id == "C0BVDPW43PE"
 
 
+def test_a_cron_triggered_tool_call_resolves_from_the_jobs_own_cron_recipient(plugin_module, monkeypatch):
+    """KATA-24 fix round 3: a job neither planned by `/kata-sync-digests`
+    nor named in `KATA_JOB_IDENTITIES` (made directly against Hermes's cron
+    API — the reported `kata-demo-quiz-B-*` shape) still resolves, from its
+    own durably recorded `recipient`, once one exists in `ctx.cron.jobs`."""
+    LearningServiceClient = plugin_module.LearningServiceClient
+    seen = []
+
+    def fake_request(self, method, path, *, identity=None, params=None, json_body=None):
+        seen.append({"method": method, "path": path, "identity": identity})
+        return {"grade": 1.0, "correct": True}
+
+    monkeypatch.setattr(LearningServiceClient, "request", fake_request)
+
+    ctx = FakePluginContext()
+    # Simulates a job created directly against Hermes's cron API, outside
+    # this plugin entirely — `register(ctx)` never ran `create_digest_jobs`
+    # for it, and no env config names it either.
+    ctx.cron.jobs.create_job(
+        name="kata-demo-quiz-B-C0C10B1KHHP",
+        schedule="0 0 1 1 *",
+        recipient={"platform": "slack", "external_id": "C0C10B1KHHP"},
+    )
+
+    plugin_module.register(ctx)
+
+    submit_review = ctx.tools["submit_review"]["handler"]
+    submit_review(
+        {"item_id": "lm-1", "idempotency_key": "k1", "response": {"choice": 1}},
+        session_id=None,
+        job_name="kata-demo-quiz-B-C0C10B1KHHP",
+    )
+
+    assert len(seen) == 1
+    assert seen[0]["identity"].platform == "slack"
+    assert seen[0]["identity"].external_id == "C0C10B1KHHP"
+
+
 def test_register_refuses_an_unknown_identity_before_any_tool_call(plugin_module, monkeypatch):
     LearningServiceClient = plugin_module.LearningServiceClient
     monkeypatch.setattr(

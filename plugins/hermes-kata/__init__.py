@@ -40,7 +40,13 @@ try:
     from .hermes_kata.mcq import register_mcq_rendering_section
     from .hermes_kata.quiz import ensure_quiz_thread_identity
     from .hermes_kata.team_reveal import register_team_reveal
-    from .hermes_kata.tools import JobIdentityRegistry, job_identities_from_env, make_identity_resolver, register_tools
+    from .hermes_kata.tools import (
+        JobIdentityRegistry,
+        cron_job_recipient_lookup,
+        job_identities_from_env,
+        make_identity_resolver,
+        register_tools,
+    )
 except ImportError:
     from hermes_kata.client import LearningServiceClient
     from hermes_kata.digest import create_digest_jobs, load_digest_roster, team_recipient_from_env
@@ -49,7 +55,13 @@ except ImportError:
     from hermes_kata.mcq import register_mcq_rendering_section
     from hermes_kata.quiz import ensure_quiz_thread_identity
     from hermes_kata.team_reveal import register_team_reveal
-    from hermes_kata.tools import JobIdentityRegistry, job_identities_from_env, make_identity_resolver, register_tools
+    from hermes_kata.tools import (
+        JobIdentityRegistry,
+        cron_job_recipient_lookup,
+        job_identities_from_env,
+        make_identity_resolver,
+        register_tools,
+    )
 
 
 def register(ctx: Any) -> None:
@@ -64,7 +76,13 @@ def register(ctx: Any) -> None:
     # gets a chance to run.
     for _name, _identity in job_identities_from_env(os.environ.get("KATA_JOB_IDENTITIES")).items():
         job_identities.set(_name, _identity)
-    resolve_identity = make_identity_resolver(cache, job_identities, store_handle)
+    # KATA-24 fix round 3: a job neither this plugin nor KATA_JOB_IDENTITIES
+    # ever named (made directly against Hermes's cron API) still has its own
+    # recipient recorded there — fall back to reading it back, best-effort,
+    # rather than failing closed on every job this deploy didn't anticipate.
+    resolve_identity = make_identity_resolver(
+        cache, job_identities, store_handle, job_recipient_lookup=cron_job_recipient_lookup(getattr(ctx, "cron", None))
+    )
 
     register_identity_hook(ctx, client, cache, store_handle)
     register_tools(ctx, client, resolve_identity=resolve_identity)

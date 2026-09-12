@@ -12,7 +12,7 @@ bare `session_id` must resolve back through `lookup_by_session_id`.
 from __future__ import annotations
 
 import pytest
-from fakes import FakeGateway, FakeLearningServiceClient, FakeMessageEvent, FakeSessionStore, FakeSource
+from fakes import FakeCron, FakeGateway, FakeLearningServiceClient, FakeMessageEvent, FakeSessionStore, FakeSource
 
 from hermes_kata.identity import (
     UNKNOWN_IDENTITY_MESSAGE,
@@ -21,7 +21,12 @@ from hermes_kata.identity import (
     make_bind_identity,
 )
 from hermes_kata.client import ActingIdentity
-from hermes_kata.tools import JobIdentityRegistry, job_identities_from_env, make_identity_resolver
+from hermes_kata.tools import (
+    JobIdentityRegistry,
+    cron_job_recipient_lookup,
+    job_identities_from_env,
+    make_identity_resolver,
+)
 
 
 def _event(platform="slack", user_id="U42"):
@@ -264,3 +269,121 @@ def test_job_identities_from_env_feeds_the_registry_the_resolver_reads():
     identity = resolver(session_id=None, job_name="kata-demo-quiz-B-C0BVDPW43PE")
 
     assert identity == ActingIdentity(platform="slack", external_id="C0BVDPW43PE")
+
+
+# --- KATA-24 fix round 3: cron_job_recipient_lookup (durable job metadata --
+# --- fallback for a job neither this plugin nor KATA_JOB_IDENTITIES named) -
+
+
+def test_cron_job_recipient_lookup_resolves_from_the_jobs_own_recorded_recipient():
+    # A job made directly against Hermes's cron API — same shape
+    # `digest.create_digest_jobs` itself writes (`recipient={"platform":
+    # ..., "external_id": ...}`), just never through this plugin's code.
+    cron = FakeCron()
+    cron.jobs.create_job(
+        name="kata-demo-quiz-B-C0C10B1KHHP",
+        schedule="0 0 1 1 *",
+        toolset="learning",
+        recipient={"platform": "slack", "external_id": "C0C10B1KHHP"},
+    )
+
+    lookup = cron_job_recipient_lookup(cron)
+    assert lookup is not None
+    assert lookup("kata-demo-quiz-B-C0C10B1KHHP") == {"platform": "slack", "external_id": "C0C10B1KHHP"}
+
+
+def test_cron_job_recipient_lookup_is_none_for_an_unknown_job():
+    cron = FakeCron()
+    lookup = cron_job_recipient_lookup(cron)
+    assert lookup("no-such-job") is None
+
+
+def test_cron_job_recipient_lookup_is_none_when_cron_is_none():
+    assert cron_job_recipient_lookup(None) is None
+
+
+def test_cron_job_recipient_lookup_is_none_when_jobs_has_no_get_job():
+    class _NoReadCronJobs:
+        def create_job(self, *, name, **kwargs):
+            return {"name": name, **kwargs}
+
+    class _NoReadCron:
+        def __init__(self):
+            self.jobs = _NoReadCronJobs()
+
+    assert cron_job_recipient_lookup(_NoReadCron()) is None
+
+
+def test_cron_job_recipient_lookup_is_none_when_get_job_raises():
+    class _RaisingCronJobs:
+        def get_job(self, name):
+            raise RuntimeError("boom")
+
+    class _RaisingCron:
+        def __init__(self):
+            self.jobs = _RaisingCronJobs()
+
+    lookup = cron_job_recipient_lookup(_RaisingCron())
+    assert lookup is not None
+    assert lookup("anything") is None
+
+
+def test_cron_job_recipient_lookup_is_none_for_a_job_with_no_usable_recipient():
+    cron = FakeCron()
+    cron.jobs.create_job(name="kata-no-recipient", schedule="* * * * *")  # no `recipient` kwarg at all
+
+    lookup = cron_job_recipient_lookup(cron)
+    assert lookup("kata-no-recipient") is None
+
+
+def test_resolver_falls_back_to_cron_recipient_when_registry_and_env_both_miss():
+    # The end-to-end KATA-24 scenario: `kata-demo-quiz-B-C0C10B1KHHP` was
+    # never planned by `digest.py` and never named in `KATA_JOB_IDENTITIES`
+    # — only `cron_job_recipient_lookup` can resolve it.
+    cron = FakeCron()
+    cron.jobs.create_job(
+        name="kata-demo-quiz-B-C0C10B1KHHP",
+        schedule="0 0 1 1 *",
+        recipient={"platform": "slack", "external_id": "C0C10B1KHHP"},
+    )
+
+    registry = JobIdentityRegistry()
+    resolver = make_identity_resolver(
+        SessionIdentityCache(), registry, SessionStoreHandle(), job_recipient_lookup=cron_job_recipient_lookup(cron)
+    )
+
+    identity = resolver(session_id=None, job_name="kata-demo-quiz-B-C0C10B1KHHP")
+    assert identity == ActingIdentity(platform="slack", external_id="C0C10B1KHHP")
+
+    # Cached: a second call resolves from the registry, not the lookup again.
+    assert registry.get("kata-demo-quiz-B-C0C10B1KHHP") == identity
+
+
+def test_resolver_prefers_the_registry_over_the_cron_recipient_lookup():
+    # `KATA_JOB_IDENTITIES`/`digest.py` registrations are an override, not
+    # just a cache seed — a job name present in both never falls through to
+    # the cron lookup's (possibly stale) recipient.
+    cron = FakeCron()
+    cron.jobs.create_job(name="kata-team-quiz", recipient={"platform": "slack", "external_id": "STALE"})
+
+    registry = JobIdentityRegistry()
+    registry.set("kata-team-quiz", ActingIdentity(platform="slack", external_id="CURRENT"))
+
+    resolver = make_identity_resolver(
+        SessionIdentityCache(), registry, SessionStoreHandle(), job_recipient_lookup=cron_job_recipient_lookup(cron)
+    )
+
+    identity = resolver(session_id=None, job_name="kata-team-quiz")
+    assert identity == ActingIdentity(platform="slack", external_id="CURRENT")
+
+
+def test_resolver_still_raises_when_cron_lookup_also_has_nothing():
+    resolver = make_identity_resolver(
+        SessionIdentityCache(),
+        JobIdentityRegistry(),
+        SessionStoreHandle(),
+        job_recipient_lookup=cron_job_recipient_lookup(FakeCron()),
+    )
+
+    with pytest.raises(LookupError):
+        resolver(session_id=None, job_name="kata-totally-unknown-job")
