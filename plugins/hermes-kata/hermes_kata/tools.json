@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.1.0",
+  "description": "Framework-neutral tool catalog for the learning service core (spec: docs/superpowers/specs/2026-09-05-learning-service-core-design.md, section 'Framework independence'). Every runtime adapter (Hermes, or any later framework) loads this file and registers the tools in its own way, forwarding calls to `endpoint` with the service token and the turn's bound acting identity. Adding a tool means editing this file only.",
+  "tools": [
+    {
+      "name": "get_next_items",
+      "description": "Get the acting learner's next items to review: overdue cards first, then unlocked new items, with answer keys stripped.",
+      "endpoint": { "method": "GET", "path": "/me/next" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "submit_review",
+      "description": "Submit the learner's response to an item and get back the grade, correctness, and updated concept mastery.",
+      "endpoint": { "method": "POST", "path": "/me/reviews" },
+      "parameters": {
+        "type": "object",
+        "required": ["item_id", "idempotency_key", "response"],
+        "properties": {
+          "item_id": { "type": "string", "format": "uuid" },
+          "idempotency_key": { "type": "string" },
+          "response": {
+            "description": "{choice: int} for mcq, {choices: [int]} for msq, {rating: 1-4} for self_rated, {text: str} for short_answer.",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_progress",
+      "description": "Get the acting learner's per-concept mastery, due counts, and which concepts are unlocked.",
+      "endpoint": { "method": "GET", "path": "/me/progress" },
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "get_due_summary",
+      "description": "Get due/overdue/new-available counts for the acting learner, for rendering a digest.",
+      "endpoint": { "method": "GET", "path": "/me/due-summary" },
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "get_answers",
+      "description": "List the acting learner's own past short-answer submissions, paginated.",
+      "endpoint": { "method": "GET", "path": "/me/answers" },
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cursor": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_answers",
+      "description": "Delete all of the acting learner's stored answers immediately.",
+      "endpoint": { "method": "DELETE", "path": "/me/answers" },
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "get_notes",
+      "description": "List the acting learner's own tutoring notes, newest first.",
+      "endpoint": { "method": "GET", "path": "/me/notes" },
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "add_note",
+      "description": "Save a short tutoring note about the acting learner (max 20 notes, 500 characters each).",
+      "endpoint": { "method": "POST", "path": "/me/notes" },
+      "parameters": {
+        "type": "object",
+        "required": ["text"],
+        "properties": { "text": { "type": "string", "maxLength": 500, "minLength": 1 } },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_note",
+      "description": "Delete one of the acting learner's own notes by id.",
+      "endpoint": { "method": "DELETE", "path": "/me/notes/{id}" },
+      "parameters": {
+        "type": "object",
+        "required": ["id"],
+        "properties": { "id": { "type": "string", "format": "uuid" } },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_notes",
+      "description": "Delete all of the acting learner's own notes.",
+      "endpoint": { "method": "DELETE", "path": "/me/notes" },
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "request_link_code",
+      "description": "Mint a one-time, 15-minute code the acting learner can send from another platform to link that identity.",
+      "endpoint": { "method": "POST", "path": "/me/link-code" },
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "link_identity",
+      "description": "Consume a link code to attach a new platform identity to the person who minted it.",
+      "endpoint": { "method": "POST", "path": "/identities/link" },
+      "parameters": {
+        "type": "object",
+        "required": ["code", "platform", "external_id"],
+        "properties": {
+          "code": { "type": "string" },
+          "platform": { "type": "string", "enum": ["slack", "telegram", "discord", "whatsapp", "signal", "web"] },
+          "external_id": { "type": "string" },
+          "alt_id": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_team_overview",
+      "description": "For a manager: per-concept mean mastery, share mastered, and at-risk counts, plus per-person adherence, velocity, and last active, across their subtree.",
+      "endpoint": { "method": "GET", "path": "/team/overview" },
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "get_team_concept",
+      "description": "For a manager: per-person mastery for one concept, across their subtree.",
+      "endpoint": { "method": "GET", "path": "/team/concepts/{concept_id}" },
+      "parameters": {
+        "type": "object",
+        "required": ["concept_id"],
+        "properties": { "concept_id": { "type": "string", "format": "uuid" } },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_team_person",
+      "description": "For a manager: one reportee's concept-level state and metrics.",
+      "endpoint": { "method": "GET", "path": "/team/people/{person_id}" },
+      "parameters": {
+        "type": "object",
+        "required": ["person_id"],
+        "properties": { "person_id": { "type": "string", "format": "uuid" } },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_team_recommendations",
+      "description": "For a manager: the top concepts their subtree should focus on next, ranked, with the metrics behind the ranking.",
+      "endpoint": { "method": "GET", "path": "/team/recommendations" },
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "get_team_digest",
+      "description": "For a manager: the weekly digest payload for their subtree.",
+      "endpoint": { "method": "GET", "path": "/team/digest" },
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "set_team_focus",
+      "description": "For a manager: set a focus (extra weight in item selection) on a concept for their subtree or for one reportee.",
+      "endpoint": { "method": "POST", "path": "/team/focus" },
+      "parameters": {
+        "type": "object",
+        "required": ["scope_kind", "scope_person_id", "concept_id"],
+        "properties": {
+          "scope_kind": { "type": "string", "enum": ["subtree", "person"] },
+          "scope_person_id": { "type": "string", "format": "uuid" },
+          "concept_id": { "type": "string", "format": "uuid" },
+          "weight": { "type": "number", "default": 1.5, "exclusiveMinimum": 0 },
+          "expires_at": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_team_focus",
+      "description": "For a manager: remove a focus they set or that scopes a subtree they own.",
+      "endpoint": { "method": "DELETE", "path": "/team/focus/{id}" },
+      "parameters": {
+        "type": "object",
+        "required": ["id"],
+        "properties": { "id": { "type": "string", "format": "uuid" } },
+        "additionalProperties": false
+      }
+    }
+  ]
+}
