@@ -1,7 +1,7 @@
-"""`/admin/courses`, `/admin/concepts`, `/admin/edges`, `/admin/items`,
-`/admin/topics` (spec §Curriculum): operator CRUD, prerequisite acyclicity
--> 422 `cycle`, item kind enum, and publish flipping item status. Uses an
-in-memory SQLite engine, same as `test_admin_roster_import.py`.
+"""`/admin/courses`, `/admin/concepts`, `/admin/edges`, `/admin/items` (US-C1,
+AGCTM-38, spec §Curriculum): operator CRUD, prerequisite acyclicity -> 422
+`cycle`, item kind enum, and publish flipping item status. Uses an in-memory
+SQLite engine, same as `test_admin_roster_import.py`.
 """
 
 import os

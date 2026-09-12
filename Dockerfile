@@ -21,18 +21,17 @@ RUN apt-get update \
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir .
 
-# The rest of this monorepo: `alembic.ini`/`migrations/` for the migration
-# step below, `plugins/hermes-kata` so `roster.service.plan_digest_jobs_count`
-# can reach `hermes_kata.digests` (best-effort — see that module's own
-# docstring), and `learning_service/` itself, seed data included.
+# The rest of this monorepo: `plugins/hermes-kata` so
+# `roster.service.plan_digest_jobs_count` can reach `hermes_kata.digests`
+# (best-effort — see that module's own docstring), and `learning_service/`
+# itself, seed data included.
 COPY . .
 
 ENV PORT=8000
 EXPOSE 8000
 
-# `alembic upgrade head` before serving on every start (deploy/kata/
-# README.md "Day-2 operations"; matches the `RAILPACK_DEPLOY_START_CMD`
-# override already set on the live Railway `learning` service). The two
-# cron services override this with their own start command
-# (`python -m learning_service.cli retention|replay`) and never migrate.
-CMD ["sh", "-c", "alembic upgrade head && python -m learning_service.serve"]
+# No migration step: the app creates its own schema on boot
+# (`main.py`'s lifespan runs `Base.metadata.create_all`, idempotent across
+# restarts). The two cron services override this with their own start
+# command (`python -m learning_service.cli retention|replay`).
+CMD ["python", "-m", "learning_service.serve"]

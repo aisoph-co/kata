@@ -1,109 +1,101 @@
-"""`learning_service.seed` (spec §Deployment, KATA-4 R6): the vendored seed
-data is present, `seed_ferry()` loads it, and re-running it is a no-op.
-
-Uses an in-memory SQLite engine, same convention as `test_admin_roster_
-import.py`/`test_identity.py`.
+"""`learning_service.seed`: loading a named scenario into Postgres (SQLite
+here, generic types only) must be idempotent across a restart, and
+`/health` must report which scenario `LEARNING_SEED` names. Scenario-specific
+acceptance criteria (exact counts, Quinn as sole operator, ...) live in
+`test_ferry_seed.py`.
 """
 
 from __future__ import annotations
 
-import json
 import os
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 os.environ.setdefault("SERVICE_TOKEN", "test-token")
+os.environ.setdefault("LEARNING_LLM", "stub")
 os.environ.pop("DATABASE_URL", None)
 
-from learning_service import seed as seed_module  # noqa: E402
-from learning_service.curriculum.models import Course, Item  # noqa: E402
-from learning_service.engine.sql_models import ReviewRow  # noqa: E402
+from learning_service.curriculum.models import Concept, Course  # noqa: E402
 from learning_service.identity.models import Base, Person  # noqa: E402
+from learning_service.main import app  # noqa: E402
+from learning_service.seed import main, seed  # noqa: E402
 
 
 @pytest.fixture
-async def session(monkeypatch):
-    engine = create_async_engine("sqlite+aiosqlite://")
+async def sessionmaker(tmp_path):
+    url = f"sqlite+aiosqlite:///{tmp_path}/seed_test.db"
+    engine = create_async_engine(url)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
-
-    class _FakeScope:
-        async def __aenter__(self_inner):
-            self_inner._s = sessionmaker()
-            return self_inner._s
-
-        async def __aexit__(self_inner, *exc):
-            await self_inner._s.close()
-
-    monkeypatch.setattr(seed_module, "session_scope", lambda: _FakeScope())
-
-    async with sessionmaker() as s:
-        yield s
+    yield async_sessionmaker(engine, expire_on_commit=False)
     await engine.dispose()
 
 
-def test_seed_data_is_vendored():
-    """The image only ever contains this repo, so the seed has to travel
-    with it (see `seed.py`'s own module docstring) — never reach across to
-    the planning repo at runtime."""
-    assert (seed_module.SEED_DATA / "roster.json").is_file()
-    assert (seed_module.SEED_DATA / "concepts.json").is_file()
-    assert (seed_module.SEED_DATA / "items.json").is_file()
-    assert (seed_module.SEED_DATA / "reviews.jsonl").is_file()
+async def test_first_seed_writes_expected_rows(sessionmaker):
+    async with sessionmaker() as session:
+        seeded = await seed(session, "ferry")
 
-    roster = json.loads((seed_module.SEED_DATA / "roster.json").read_text())
-    assert len(roster["persons"]) == 10
+    assert seeded is True
 
-
-async def test_seed_ferry_loads_roster_curriculum_and_reviews(session):
-    result = await seed_module.seed_ferry()
-    assert result["status"] == "loaded"
-    assert result["persons_created"] == 10
-
-    persons = (await session.execute(select(Person))).scalars().all()
+    async with sessionmaker() as session:
+        persons = (await session.execute(select(Person))).scalars().all()
+        concepts = (await session.execute(select(Concept))).scalars().all()
     assert len(persons) == 10
-
-    courses = (await session.execute(select(Course))).scalars().all()
-    assert len(courses) == 1
-
-    items = (await session.execute(select(Item))).scalars().all()
-    assert len(items) == result["items"] > 0
-    assert all(i.status == "published" for i in items)
-
-    reviews = (await session.execute(select(ReviewRow))).scalars().all()
-    assert len(reviews) == result["reviews_loaded"] > 0
-
-    assert result["card_state_count"] > 0
-    assert result["concept_state_count"] > 0
+    assert len(concepts) == 14
 
 
-async def test_seed_ferry_is_idempotent(session):
-    first = await seed_module.seed_ferry()
-    assert first["status"] == "loaded"
+async def test_restart_with_same_db_is_idempotent(sessionmaker):
+    async with sessionmaker() as session:
+        await seed(session, "ferry")
 
-    second = await seed_module.seed_ferry()
-    assert second["status"] == "already_loaded"
+    # A restart against the same database must not duplicate rows.
+    async with sessionmaker() as session:
+        seeded_again = await seed(session, "ferry")
 
-    reviews = (await session.execute(select(ReviewRow))).scalars().all()
-    assert len(reviews) == first["reviews_loaded"]
+    assert seeded_again is False
 
-    persons = (await session.execute(select(Person))).scalars().all()
-    assert len(persons) == 10
+    async with sessionmaker() as session:
+        persons = (await session.execute(select(Person))).scalars().all()
+    assert len(persons) == 10  # no duplicates
 
 
-async def test_seed_ferry_writes_kata_roster_json(session, tmp_path, monkeypatch):
-    target = tmp_path / "roster.json"
-    monkeypatch.setenv("KATA_ROSTER_JSON", str(target))
+async def test_unknown_scenario_raises(sessionmaker):
+    async with sessionmaker() as session:
+        with pytest.raises(ValueError):
+            await seed(session, "not-a-real-scenario")
 
-    result = await seed_module.seed_ferry()
-    assert result["kata_roster_json"] == str(target)
 
-    written = json.loads(target.read_text())
-    # Every seeded person carries a slack_user_id (`docs/seed/0-team/
-    # roster.json`), so all ten show up here — the file `hermes_kata.
-    # commands.load_roster` reads (KATA-11 -> KATA-4 wiring).
-    assert len(written["persons"]) == 10
-    assert all({"id", "slack_user_id"} <= p.keys() for p in written["persons"])
+def test_cli_rejects_unknown_or_missing_scenario():
+    assert main([]) == 2
+    assert main(["bogus"]) == 2
+
+
+async def test_course_row_matches_expected_shape(sessionmaker):
+    async with sessionmaker() as session:
+        await seed(session, "ferry")
+        course = (await session.execute(select(Course))).scalar_one()
+
+    assert course.title == "Ferry Payments Core"
+    assert course.slug == "ferry-payments-core"
+
+
+def test_health_reports_the_configured_seed_scenario(monkeypatch):
+    monkeypatch.setenv("LEARNING_SEED", "ferry")
+    client = TestClient(app)
+    assert client.get("/health").json()["seed"] == "ferry"
+
+
+def test_health_reports_none_when_seed_names_an_unknown_scenario(monkeypatch):
+    monkeypatch.setenv("LEARNING_SEED", "not-a-real-scenario")
+    client = TestClient(app)
+    assert client.get("/health").json()["seed"] == "none"
+
+
+def test_health_reports_none_when_learning_seed_is_unset(monkeypatch):
+    monkeypatch.delenv("LEARNING_SEED", raising=False)
+    client = TestClient(app)
+    assert client.get("/health").json()["seed"] == "none"
+

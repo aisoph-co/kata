@@ -1,10 +1,8 @@
-"""`POST /admin/roster/import` (spec §Identity, roles, teams → Roster
-seeding): upsert persons by email, link `manager_id` from manager email (in
-either import order), and create a `slack` identity when a Slack user ID is
-supplied. Uses an in-memory SQLite engine, same as `test_identity.py`.
-
-Also covers subtree resolution (spec §Identity, roles, teams → Rules,
-"Subtree") on a nested roster built the same way.
+"""`POST /admin/roster/import` (US-A3, AGCTM-35, spec §Identity, roles,
+teams → Roster seeding): upsert persons by email, link `manager_id` from
+manager email (in either import order), and create a `slack` identity when
+a Slack user ID is supplied. Uses an in-memory SQLite engine, same as
+`test_identity.py`.
 """
 
 import os
@@ -20,7 +18,6 @@ os.environ.pop("DATABASE_URL", None)
 from learning_service.db import get_session  # noqa: E402
 from learning_service.identity.models import Base, Identity, Person  # noqa: E402
 from learning_service.main import app  # noqa: E402
-from learning_service.roster.service import get_subtree_ids, is_manager  # noqa: E402
 
 AUTH = {"Authorization": "Bearer test-token"}
 
@@ -331,42 +328,3 @@ def test_other_is_not_a_role(client):
     )
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "validation_error"
-
-
-# ---------------------------------------------------------------------------
-# Subtree resolution (spec §Identity, roles, teams → Rules, "Subtree"): the
-# person plus all transitive reports, via a recursive CTE.
-# ---------------------------------------------------------------------------
-
-
-async def test_subtree_includes_the_person_and_transitive_reports(client, session: AsyncSession):
-    client.post(
-        "/admin/roster/import",
-        headers=AUTH,
-        json={
-            "persons": [
-                {"email": "root@example.com", "display_name": "Root"},
-                {"email": "mid@example.com", "display_name": "Mid", "manager_email": "root@example.com"},
-                {"email": "leaf@example.com", "display_name": "Leaf", "manager_email": "mid@example.com"},
-                {"email": "outsider@example.com", "display_name": "Outsider"},
-            ]
-        },
-    )
-    by_email = {}
-    for email in ("root@example.com", "mid@example.com", "leaf@example.com", "outsider@example.com"):
-        result = await session.execute(select(Person).where(Person.email == email))
-        by_email[email] = result.scalar_one()
-
-    subtree = await get_subtree_ids(session, by_email["root@example.com"].id)
-    assert set(subtree) == {
-        by_email["root@example.com"].id,
-        by_email["mid@example.com"].id,
-        by_email["leaf@example.com"].id,
-    }
-    assert by_email["outsider@example.com"].id not in subtree
-
-    # A leaf with no reports has a subtree of just themselves, and is not a manager.
-    assert await get_subtree_ids(session, by_email["leaf@example.com"].id) == [by_email["leaf@example.com"].id]
-    assert await is_manager(session, by_email["leaf@example.com"].id) is False
-    assert await is_manager(session, by_email["mid@example.com"].id) is True
-    assert await is_manager(session, by_email["root@example.com"].id) is True

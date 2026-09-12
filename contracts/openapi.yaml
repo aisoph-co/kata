@@ -1,0 +1,1526 @@
+openapi: 3.1.0
+info:
+  title: Kata Learning Service
+  version: "1.2.1"
+  summary: >-
+    Frozen API for the learning service core (AGCTM-10, spec
+    docs/superpowers/specs/2026-09-05-learning-service-core-design.md).
+    Hermes and the web app build against this contract while the core
+    implementation lands.
+  description: >-
+    Identity, roster, curriculum, learning engine (FSRS scheduling + BKT
+    mastery), team analytics, and privacy for a team learning agent.
+    Framework-neutral: the only inbound contract is HTTP with a service
+    token and an asserted identity. See `tools.json` for the framework-
+    neutral tool catalog that wraps the learner- and manager-facing
+    endpoints below.
+servers:
+  - url: https://learning.railway.internal
+    description: Railway private network (Hermes, web app)
+  - url: http://localhost:8000
+    description: Local development
+
+security:
+  - ServiceToken: []
+
+tags:
+  - name: health
+  - name: identity
+  - name: learner
+  - name: manager
+  - name: admin
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service, version, database]
+                properties:
+                  status: { type: string, const: ok }
+                  service: { type: string, const: learning }
+                  version: { type: string }
+                  database: { type: string, enum: [configured, unconfigured] }
+                  seed: { type: string, description: "LEARNING_SEED's scenario name, or 'none'." }
+
+  /health/db:
+    get:
+      tags: [health]
+      summary: Database connectivity check
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, postgres]
+                properties:
+                  status: { type: string, const: ok }
+                  postgres: { type: string }
+        "503":
+          description: Database unconfigured or unreachable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /whoami:
+    get:
+      tags: [identity]
+      summary: Echo the resolved acting identity
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  acting_identity: { $ref: "#/components/schemas/ActingIdentity" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /identities/resolve:
+    post:
+      tags: [identity]
+      summary: Resolve a platform identity to a person
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdentityResolveRequest" }
+      responses:
+        "200":
+          description: Known identity
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PersonSummary" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /identities/link:
+    post:
+      tags: [identity]
+      summary: Link a new platform identity to an existing person via a link code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdentityLinkRequest" }
+      responses:
+        "200":
+          description: Linked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Identity" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /me/link-code:
+    post:
+      tags: [learner]
+      summary: Mint a one-time, 15-minute link code for the acting person
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LinkCode" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+
+  /me/next:
+    get:
+      tags: [learner]
+      summary: Next items due or unlocked for the acting person
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 20, default: 5 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NextItemsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+
+  /me/reviews:
+    post:
+      tags: [learner]
+      summary: Submit a review for an item
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReviewSubmitRequest" }
+      responses:
+        "200":
+          description: Graded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReviewResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+        "409": { $ref: "#/components/responses/IdempotencyReplay" }
+        "422":
+          description: Validation error, or no_grader for a teach_back item
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /me/progress:
+    get:
+      tags: [learner]
+      summary: Per-concept mastery state for the acting person
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProgressResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+
+  /me/due-summary:
+    get:
+      tags: [learner]
+      summary: Due/overdue/new counts for digests
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DueSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+
+  /me/answers:
+    get:
+      tags: [learner]
+      summary: Own answers, paginated
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnswersPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+    delete:
+      tags: [learner]
+      summary: Delete all of the acting person's answers immediately
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+
+  /me/notes:
+    get:
+      tags: [learner]
+      summary: Own learner notes, newest first
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotesResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+    post:
+      tags: [learner]
+      summary: Add a learner note (max 20 per person, 500 characters each)
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NoteCreateRequest" }
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Note" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+        "422": { $ref: "#/components/responses/NoteCap" }
+    delete:
+      tags: [learner]
+      summary: Delete all of the acting person's notes
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+
+  /me/notes/{id}:
+    delete:
+      tags: [learner]
+      summary: Delete one of the acting person's notes
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+        "404": { description: Not found or not owned by the acting person }
+
+  /topics:
+    get:
+      tags: [learner]
+      summary: Topics, filtered to the acting person's own role when one is on record, else all
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TopicsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+
+  /me/concept-graph:
+    get:
+      tags: [learner]
+      summary: Concepts and edges of the course, with the acting person's p_known/mastered/unlocked per node
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConceptGraphResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/UnknownIdentity" }
+
+  /team/overview:
+    get:
+      tags: [manager]
+      summary: Per-concept and per-person aggregates for the acting person's subtree
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamOverviewResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAManager" }
+
+  /team/concepts/{concept_id}:
+    get:
+      tags: [manager]
+      summary: Per-person state for one concept, within the acting person's subtree
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+        - name: concept_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamConceptDetailResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAManager" }
+
+  /team/people/{person_id}:
+    get:
+      tags: [manager]
+      summary: One reportee's concept-level state and metrics
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+        - name: person_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamPersonDetailResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/OutsideSubtree" }
+
+  /team/recommendations:
+    get:
+      tags: [manager]
+      summary: Top-5 concepts to focus on next, ranked
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecommendationsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAManager" }
+
+  /team/digest:
+    get:
+      tags: [manager]
+      summary: Weekly digest payload for the acting person's subtree
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+        - name: days
+          in: query
+          required: false
+          description: Digest window in days; period_start/period_end echo this window.
+          schema: { type: integer, default: 7, minimum: 1, maximum: 90 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TeamDigestResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAManager" }
+
+  /team/focus:
+    post:
+      tags: [manager]
+      summary: Set a subtree- or person-scoped focus
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FocusCreateRequest" }
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Focus" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/OutsideSubtree" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /team/focus/{id}:
+    delete:
+      tags: [manager]
+      summary: Remove a focus the caller set or owns the scope of
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/OutsideSubtree" }
+        "404": { description: Not found }
+
+  /team/audit:
+    get:
+      tags: [manager]
+      summary: Audit log for the acting operator's own subtree
+      parameters:
+        - $ref: "#/components/parameters/XActingIdentity"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAManager" }
+
+  /admin/roster/import:
+    post:
+      tags: [admin]
+      summary: Upsert persons and manager links from a list (operator only)
+      description: >-
+        Also creates a `(platform: web, external_id: <normalized email>)`
+        identity for every person in the batch (Contract change #6), so web
+        sign-in only ever calls `POST /identities/resolve`. 422 when a
+        normalized email is already linked to a different person.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RosterImportRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RosterImportResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an operator }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/courses:
+    get:
+      tags: [admin]
+      summary: List courses
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Course" }
+    post:
+      tags: [admin]
+      summary: Create a course
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CourseCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Course" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/courses/{id}:
+    get:
+      tags: [admin]
+      summary: Get a course
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Course" }
+        "404": { description: Not found }
+    patch:
+      tags: [admin]
+      summary: Update a course
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CourseCreate" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Course" }
+        "404": { description: Not found }
+    delete:
+      tags: [admin]
+      summary: Delete a course
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "404": { description: Not found }
+
+  /admin/concepts:
+    get:
+      tags: [admin]
+      summary: List concepts
+      parameters:
+        - name: course_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Concept" }
+    post:
+      tags: [admin]
+      summary: Create a concept
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConceptCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Concept" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/concepts/{id}:
+    get:
+      tags: [admin]
+      summary: Get a concept
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Concept" }
+        "404": { description: Not found }
+    patch:
+      tags: [admin]
+      summary: Update a concept
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConceptCreate" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Concept" }
+        "404": { description: Not found }
+    delete:
+      tags: [admin]
+      summary: Delete a concept
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "404": { description: Not found }
+
+  /admin/edges:
+    get:
+      tags: [admin]
+      summary: List concept edges
+      parameters:
+        - name: course_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ConceptEdge" }
+    post:
+      tags: [admin]
+      summary: Create a concept edge (validated acyclic within the course for prerequisite edges)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConceptEdgeCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConceptEdge" }
+        "422": { $ref: "#/components/responses/Cycle" }
+
+  /admin/edges/{id}:
+    delete:
+      tags: [admin]
+      summary: Delete a concept edge
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "404": { description: Not found }
+
+  /admin/items:
+    get:
+      tags: [admin]
+      summary: List items (unstripped; operator view)
+      parameters:
+        - name: concept_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Item" }
+    post:
+      tags: [admin]
+      summary: Create an item (starts as draft)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ItemCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Item" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /admin/items/{id}:
+    get:
+      tags: [admin]
+      summary: Get an item (unstripped; operator view)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Item" }
+        "404": { description: Not found }
+    patch:
+      tags: [admin]
+      summary: Update an item, including publishing it (status draft -> published)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ItemUpdate" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Item" }
+        "404": { description: Not found }
+    delete:
+      tags: [admin]
+      summary: Delete an item
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+        "404": { description: Not found }
+
+  /admin/replay:
+    post:
+      tags: [admin]
+      summary: Rebuild card_state and concept_state from the review log
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReplayResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an operator }
+
+  /admin/topics:
+    post:
+      tags: [admin]
+      summary: Create a topic (operator only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TopicCreate" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Topic" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an operator }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+components:
+  securitySchemes:
+    ServiceToken:
+      type: http
+      scheme: bearer
+      description: >-
+        One secret per trusted caller: SERVICE_TOKEN (Hermes) or
+        WEB_SERVICE_TOKEN (the web app), checked identically. Requires the
+        X-Acting-Identity header on every non-health route (e.g.
+        `web:<auth0 subject or normalized email>` for the web app).
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+      description: >-
+        Reserved and unused (Contract change #7). Browsers never call the
+        learning service directly; the web app holds a session with learners
+        and forwards to this API with its own service token (ServiceToken)
+        instead. No route implements this scheme.
+
+  parameters:
+    XActingIdentity:
+      name: X-Acting-Identity
+      in: header
+      required: true
+      description: "<platform>:<external_id>, optionally ;alt=<alt_id>. Required when authenticating with ServiceToken; resolved through identity, unknown -> 403."
+      schema:
+        type: string
+        example: "slack:U0123456;alt=uuid-1"
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid service token / session
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    ValidationError:
+      description: Schema validation failure
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    UnknownIdentity:
+      description: Identity not in roster
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    NotAManager:
+      description: Acting person has no reports
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    OutsideSubtree:
+      description: Subject is not in the caller's subtree
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    IdempotencyReplay:
+      description: Same idempotency key seen; original result returned in the body
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ReviewResult" }
+    NoteCap:
+      description: More than 20 notes, or a note over 500 characters
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Cycle:
+      description: Prerequisite edge would create a cycle
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - unauthorized
+                - validation_error
+                - unknown_identity
+                - outside_subtree
+                - not_a_manager
+                - idempotency_replay
+                - no_grader
+                - note_cap
+                - cycle
+                - database_unconfigured
+                - database_unreachable
+            message: { type: string }
+
+    Platform:
+      type: string
+      enum: [slack, telegram, discord, whatsapp, signal, web]
+
+    ActingIdentity:
+      type: object
+      required: [platform, external_id]
+      properties:
+        platform: { $ref: "#/components/schemas/Platform" }
+        external_id: { type: string }
+        alt_id: { type: [string, "null"] }
+
+    PersonSummary:
+      type: object
+      required: [id, display_name, is_operator]
+      properties:
+        id: { type: string, format: uuid }
+        display_name: { type: string }
+        email: { type: [string, "null"], format: email }
+        is_operator: { type: boolean }
+        manager_id: { type: [string, "null"], format: uuid }
+        role: { type: [string, "null"], enum: [tech_lead, senior_swe, junior_swe, pm, uxd, null] }
+
+    IdentityResolveRequest:
+      type: object
+      required: [platform, external_id]
+      properties:
+        platform: { $ref: "#/components/schemas/Platform" }
+        external_id: { type: string }
+        alt_id: { type: string }
+
+    IdentityLinkRequest:
+      type: object
+      required: [code, platform, external_id]
+      properties:
+        code: { type: string }
+        platform: { $ref: "#/components/schemas/Platform" }
+        external_id: { type: string }
+        alt_id: { type: string }
+
+    Identity:
+      type: object
+      required: [id, person_id, platform, external_id, is_primary, linked_at]
+      properties:
+        id: { type: string, format: uuid }
+        person_id: { type: string, format: uuid }
+        platform: { $ref: "#/components/schemas/Platform" }
+        external_id: { type: string }
+        alt_id: { type: [string, "null"] }
+        is_primary: { type: boolean }
+        linked_at: { type: string, format: date-time }
+
+    LinkCode:
+      type: object
+      required: [code, expires_at]
+      properties:
+        code: { type: string }
+        expires_at: { type: string, format: date-time }
+
+    ItemKind:
+      type: string
+      enum: [mcq, msq, self_rated, short_answer, teach_back]
+
+    ItemPublic:
+      description: Learner-facing item with answer keys stripped.
+      type: object
+      required: [id, concept_id, kind, prompt, payload]
+      properties:
+        id: { type: string, format: uuid }
+        concept_id: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/ItemKind" }
+        prompt: { type: string }
+        payload:
+          description: >-
+            mcq, msq -> {options: [str]}; self_rated, short_answer,
+            teach_back -> {} (answer, reference, and rubric are stripped).
+          type: object
+
+    NextItemsReason:
+      type: string
+      enum: [all_mastered, blocked_by_prerequisites]
+
+    NextItemsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ItemPublic" }
+        reason: { $ref: "#/components/schemas/NextItemsReason" }
+
+    ReviewResponseBody:
+      description: Shape depends on the item kind being reviewed.
+      oneOf:
+        - type: object
+          required: [choice]
+          properties:
+            choice: { type: integer, minimum: 0 }
+        - description: msq — one or more selected option indices.
+          type: object
+          required: [choices]
+          properties:
+            choices:
+              type: array
+              items: { type: integer, minimum: 0 }
+              minItems: 1
+        - type: object
+          required: [rating]
+          properties:
+            rating: { type: integer, minimum: 1, maximum: 4 }
+        - type: object
+          required: [text]
+          properties:
+            text: { type: string }
+
+    ReviewSubmitRequest:
+      type: object
+      required: [item_id, idempotency_key, response]
+      properties:
+        item_id: { type: string, format: uuid }
+        idempotency_key: { type: string }
+        response: { $ref: "#/components/schemas/ReviewResponseBody" }
+        confidence:
+          description: Stated before the reveal, 1-5. Not the same field as self_rated's post-reveal rating.
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 5
+        bypassed:
+          description: "\"Just tell me\": the learner asked for the answer instead of answering."
+          type: boolean
+          default: false
+
+    ConceptState:
+      type: object
+      required: [p_known, mastered]
+      properties:
+        p_known: { type: number, minimum: 0, maximum: 1 }
+        mastered: { type: boolean }
+
+    ReviewResult:
+      type: object
+      required: [grade, rating, next_due_at, concept]
+      properties:
+        grade: { type: number, minimum: 0, maximum: 1 }
+        rating: { type: integer, minimum: 1, maximum: 4 }
+        correct: { type: [boolean, "null"] }
+        explanation: { type: [string, "null"] }
+        confidence: { type: [integer, "null"], minimum: 1, maximum: 5 }
+        bypassed: { type: boolean }
+        next_due_at: { type: string, format: date-time }
+        concept: { $ref: "#/components/schemas/ConceptState" }
+
+    ProgressEntry:
+      type: object
+      required: [concept_id, p_known, mastered, due_count, unlocked]
+      properties:
+        concept_id: { type: string, format: uuid }
+        p_known: { type: number, minimum: 0, maximum: 1 }
+        mastered: { type: boolean }
+        due_count: { type: integer, minimum: 0 }
+        unlocked: { type: boolean }
+
+    RetentionBand:
+      type: object
+      required: [accuracy, samples]
+      description: >-
+        Accuracy of reviews whose gap since the previous rep of the same item
+        falls in the band (1d = 1, 7d = 5-10, 30d = 21-45 days); accuracy is
+        null when fewer than 5 qualifying samples, but samples is always the
+        real count.
+      properties:
+        accuracy: { type: [number, "null"], minimum: 0, maximum: 1 }
+        samples: { type: integer, minimum: 0 }
+
+    RetentionBands:
+      type: object
+      required: [d1, d7, d30]
+      properties:
+        d1: { $ref: "#/components/schemas/RetentionBand" }
+        d7: { $ref: "#/components/schemas/RetentionBand" }
+        d30: { $ref: "#/components/schemas/RetentionBand" }
+
+    PersonLearningSummary:
+      type: object
+      required: [retention, bypass_rate, calibration, review_count, last_active]
+      properties:
+        retention: { $ref: "#/components/schemas/RetentionBands" }
+        bypass_rate: { type: [number, "null"], minimum: 0, maximum: 1 }
+        calibration:
+          description: Mean stated confidence rescaled from 1-5 onto 0-1 as (c-1)/4, minus accuracy, over reviews carrying a confidence; null when none do. -1 = maximally underconfident, +1 = maximally overconfident, 0 = calibrated.
+          type: [number, "null"]
+        review_count: { type: integer, minimum: 0 }
+        last_active: { type: [string, "null"], format: date-time }
+
+    ProgressResponse:
+      type: object
+      required: [concepts, summary]
+      properties:
+        concepts:
+          type: array
+          items: { $ref: "#/components/schemas/ProgressEntry" }
+        summary: { $ref: "#/components/schemas/PersonLearningSummary" }
+
+    DueSummary:
+      type: object
+      required: [due_count, overdue_count, new_available_count]
+      properties:
+        due_count: { type: integer, minimum: 0 }
+        overdue_count: { type: integer, minimum: 0 }
+        new_available_count: { type: integer, minimum: 0 }
+
+    Answer:
+      type: object
+      required: [id, review_id, text, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        review_id: { type: string, format: uuid }
+        text: { type: string }
+        created_at: { type: string, format: date-time }
+
+    AnswersPage:
+      type: object
+      required: [answers]
+      properties:
+        answers:
+          type: array
+          items: { $ref: "#/components/schemas/Answer" }
+        next_cursor: { type: [string, "null"] }
+
+    Note:
+      type: object
+      required: [id, text, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        text: { type: string, maxLength: 500 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    NoteCreateRequest:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string, maxLength: 500, minLength: 1 }
+
+    NotesResponse:
+      type: object
+      required: [notes]
+      properties:
+        notes:
+          type: array
+          items: { $ref: "#/components/schemas/Note" }
+
+    TeamConceptSummary:
+      type: object
+      required: [concept_id, mean_mastery, share_mastered, at_risk_count]
+      properties:
+        concept_id: { type: string, format: uuid }
+        mean_mastery: { type: number, minimum: 0, maximum: 1 }
+        share_mastered: { type: number, minimum: 0, maximum: 1 }
+        at_risk_count: { type: integer, minimum: 0 }
+
+    TeamPersonSummary:
+      type: object
+      required: [person_id, adherence, velocity, last_active, bypass_rate]
+      properties:
+        person_id: { type: string, format: uuid }
+        adherence: { type: number, minimum: 0, maximum: 1 }
+        velocity: { type: integer, minimum: 0 }
+        last_active: { type: [string, "null"], format: date-time }
+        bypass_rate: { type: [number, "null"], minimum: 0, maximum: 1 }
+
+    TeamOverviewResponse:
+      type: object
+      required: [concepts, people, retention]
+      properties:
+        concepts:
+          type: array
+          items: { $ref: "#/components/schemas/TeamConceptSummary" }
+        people:
+          type: array
+          items: { $ref: "#/components/schemas/TeamPersonSummary" }
+        retention: { $ref: "#/components/schemas/RetentionBands" }
+
+    TeamConceptDetailResponse:
+      type: object
+      required: [concept_id, people]
+      properties:
+        concept_id: { type: string, format: uuid }
+        people:
+          type: array
+          items:
+            type: object
+            required: [person_id, p_known, mastered]
+            properties:
+              person_id: { type: string, format: uuid }
+              p_known: { type: number, minimum: 0, maximum: 1 }
+              mastered: { type: boolean }
+
+    TeamPersonDetailResponse:
+      type: object
+      required: [person_id, concepts, adherence, velocity, due_count, last_active, bypass_rate, retention, calibration]
+      properties:
+        person_id: { type: string, format: uuid }
+        concepts:
+          type: array
+          items: { $ref: "#/components/schemas/ProgressEntry" }
+        adherence: { type: number, minimum: 0, maximum: 1 }
+        velocity: { type: integer, minimum: 0 }
+        due_count: { type: integer, minimum: 0 }
+        last_active: { type: [string, "null"], format: date-time }
+        bypass_rate: { type: [number, "null"], minimum: 0, maximum: 1 }
+        retention: { $ref: "#/components/schemas/RetentionBands" }
+        calibration: { type: [number, "null"] }
+
+    Recommendation:
+      type: object
+      required: [concept_id, score, mean_mastery, dependents_count]
+      properties:
+        concept_id: { type: string, format: uuid }
+        score: { type: number }
+        mean_mastery: { type: number, minimum: 0, maximum: 1 }
+        dependents_count: { type: integer, minimum: 0 }
+
+    RecommendationsResponse:
+      type: object
+      required: [recommendations]
+      properties:
+        recommendations:
+          type: array
+          maxItems: 5
+          items: { $ref: "#/components/schemas/Recommendation" }
+
+    TeamDigestResponse:
+      type: object
+      required: [subtree_root_id, period_start, period_end, concepts, at_risk, recommendations]
+      properties:
+        subtree_root_id: { type: string, format: uuid }
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        concepts:
+          type: array
+          items: { $ref: "#/components/schemas/TeamConceptSummary" }
+        at_risk:
+          type: array
+          items:
+            type: object
+            required: [person_id, concept_id]
+            properties:
+              person_id: { type: string, format: uuid }
+              concept_id: { type: string, format: uuid }
+        recommendations:
+          type: array
+          items: { $ref: "#/components/schemas/Recommendation" }
+
+    FocusScopeKind:
+      type: string
+      enum: [subtree, person]
+
+    FocusCreateRequest:
+      type: object
+      required: [scope_kind, scope_person_id, concept_id]
+      properties:
+        scope_kind: { $ref: "#/components/schemas/FocusScopeKind" }
+        scope_person_id: { type: string, format: uuid }
+        concept_id: { type: string, format: uuid }
+        weight: { type: number, default: 1.5, exclusiveMinimum: 0 }
+        expires_at: { type: [string, "null"], format: date-time }
+
+    Focus:
+      type: object
+      required: [id, scope_kind, scope_person_id, concept_id, set_by, weight, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        scope_kind: { $ref: "#/components/schemas/FocusScopeKind" }
+        scope_person_id: { type: string, format: uuid }
+        concept_id: { type: string, format: uuid }
+        set_by: { type: string, format: uuid }
+        weight: { type: number }
+        expires_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+
+    AuditEntry:
+      type: object
+      required: [id, actor_person_id, subject_scope, endpoint, at]
+      properties:
+        id: { type: string, format: uuid }
+        actor_person_id: { type: string, format: uuid }
+        subject_scope: { type: string }
+        endpoint: { type: string }
+        at: { type: string, format: date-time }
+
+    AuditResponse:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEntry" }
+
+    RosterImportPerson:
+      type: object
+      required: [email, display_name]
+      properties:
+        email: { type: string, format: email }
+        display_name: { type: string }
+        manager_email: { type: [string, "null"], format: email }
+        slack_user_id: { type: [string, "null"] }
+        is_operator:
+          description: Omitted leaves an existing person's is_operator untouched on reimport.
+          type: [boolean, "null"]
+        role:
+          description: Omitted leaves an existing person's role untouched on reimport.
+          type: [string, "null"]
+          enum: [tech_lead, senior_swe, junior_swe, pm, uxd, null]
+
+    RosterImportRequest:
+      type: object
+      required: [persons]
+      properties:
+        persons:
+          type: array
+          items: { $ref: "#/components/schemas/RosterImportPerson" }
+
+    RosterImportResult:
+      type: object
+      required: [created, updated, persons]
+      properties:
+        created: { type: integer, minimum: 0 }
+        updated: { type: integer, minimum: 0 }
+        persons:
+          type: array
+          items: { $ref: "#/components/schemas/PersonSummary" }
+
+    Course:
+      type: object
+      required: [id, title, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: [string, "null"] }
+        slug: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+
+    CourseCreate:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        description: { type: [string, "null"] }
+        slug: { type: [string, "null"] }
+
+    Concept:
+      type: object
+      required: [id, course_id, slug, title, mastery_threshold]
+      properties:
+        id: { type: string, format: uuid }
+        course_id: { type: string, format: uuid }
+        slug: { type: string }
+        title: { type: string }
+        description: { type: [string, "null"] }
+        mastery_threshold: { type: number, default: 0.85, minimum: 0, maximum: 1 }
+
+    ConceptCreate:
+      type: object
+      required: [course_id, slug, title]
+      properties:
+        course_id: { type: string, format: uuid }
+        slug: { type: string }
+        title: { type: string }
+        description: { type: [string, "null"] }
+        mastery_threshold: { type: number, default: 0.85, minimum: 0, maximum: 1 }
+
+    ConceptEdgeKind:
+      type: string
+      enum: [prerequisite, related]
+
+    ConceptEdge:
+      type: object
+      required: [from_concept_id, to_concept_id, kind, weight]
+      properties:
+        id: { type: string, format: uuid }
+        from_concept_id: { type: string, format: uuid }
+        to_concept_id: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/ConceptEdgeKind" }
+        weight: { type: number, exclusiveMinimum: 0, maximum: 1 }
+
+    ConceptEdgeCreate:
+      type: object
+      required: [from_concept_id, to_concept_id, kind]
+      properties:
+        from_concept_id: { type: string, format: uuid }
+        to_concept_id: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/ConceptEdgeKind" }
+        weight: { type: number, default: 1.0, exclusiveMinimum: 0, maximum: 1 }
+
+    ItemStatus:
+      type: string
+      enum: [draft, published]
+
+    Item:
+      description: Full item, including answer keys. Operator view only.
+      type: object
+      required: [id, concept_id, kind, prompt, payload, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        concept_id: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/ItemKind" }
+        prompt: { type: string }
+        payload:
+          description: >-
+            mcq -> {options, correct_index, explanation}; msq -> {options,
+            correct_indices: [int], explanation}; self_rated -> {answer};
+            short_answer/teach_back -> {reference, rubric}.
+          type: object
+        status: { $ref: "#/components/schemas/ItemStatus" }
+        created_at: { type: string, format: date-time }
+
+    ItemCreate:
+      type: object
+      required: [concept_id, kind, prompt, payload]
+      properties:
+        concept_id: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/ItemKind" }
+        prompt: { type: string }
+        payload: { type: object }
+        status: { $ref: "#/components/schemas/ItemStatus" }
+
+    ItemUpdate:
+      type: object
+      properties:
+        prompt: { type: string }
+        payload: { type: object }
+        status: { $ref: "#/components/schemas/ItemStatus" }
+
+    ReplayResult:
+      type: object
+      required: [status, replayed_reviews, card_state_count, concept_state_count]
+      properties:
+        status: { type: string, const: ok }
+        replayed_reviews: { type: integer, minimum: 0 }
+        card_state_count: { type: integer, minimum: 0 }
+        concept_state_count: { type: integer, minimum: 0 }
+
+    Topic:
+      type: object
+      required: [id, course_id, slug, title, persona_role, entry_concept_id, concept_ids, grounded_in]
+      properties:
+        id: { type: string, format: uuid }
+        course_id: { type: string, format: uuid }
+        slug: { type: string }
+        title: { type: string }
+        description: { type: [string, "null"] }
+        persona_role: { type: string, enum: [tech_lead, senior_swe, junior_swe, pm, uxd] }
+        entry_concept_id: { type: string, format: uuid }
+        concept_ids:
+          type: array
+          items: { type: string, format: uuid }
+        grounded_in:
+          description: >-
+            Source artifacts this topic was derived from (KAT-C1/C2), each an
+            identifier a human can follow: an issue key (`PAY-1841`) or a repo
+            path, optionally with a heading anchor
+            (`sprint-history.md#sprint-42--stop-double-charging`). Never empty.
+          type: array
+          minItems: 1
+          items: { type: string }
+
+    TopicCreate:
+      type: object
+      required: [course_id, slug, title, persona_role, entry_concept_id, concept_ids, grounded_in]
+      properties:
+        course_id: { type: string, format: uuid }
+        slug: { type: string }
+        title: { type: string }
+        description: { type: [string, "null"] }
+        persona_role: { type: string, enum: [tech_lead, senior_swe, junior_swe, pm, uxd] }
+        entry_concept_id: { type: string, format: uuid }
+        concept_ids:
+          type: array
+          items: { type: string, format: uuid }
+        grounded_in:
+          description: At least one source artifact; an uncited topic is rejected 422 (KAT-C1).
+          type: array
+          minItems: 1
+          items: { type: string }
+
+    TopicsResponse:
+      type: object
+      required: [topics]
+      properties:
+        topics:
+          type: array
+          items: { $ref: "#/components/schemas/Topic" }
+
+    ConceptGraphNode:
+      type: object
+      required: [concept_id, slug, title, p_known, mastered, unlocked]
+      properties:
+        concept_id: { type: string, format: uuid }
+        slug: { type: string }
+        title: { type: string }
+        p_known: { type: number, minimum: 0, maximum: 1 }
+        mastered: { type: boolean }
+        unlocked: { type: boolean }
+
+    ConceptGraphResponse:
+      type: object
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          items: { $ref: "#/components/schemas/ConceptGraphNode" }
+        edges:
+          type: array
+          items: { $ref: "#/components/schemas/ConceptEdge" }

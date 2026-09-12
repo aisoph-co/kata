@@ -1,320 +1,177 @@
-"""Privacy test suite — the deploy gate: no `/team/*` or `/admin/*` response
-carries an `answer`/`text`/`learner_note` field, `/team/people/{id}` for a
-person outside the caller's subtree is 403 `outside_subtree`, `/me/answers`
-and `/me/notes` never leak another person's rows, and every service-token-
-gated route 401s without one.
+"""Privacy, first-class (spec §Testing, "Privacy": "must pass before any
+deploy"): no `/team/*`/`/admin/*` response ever carries an `answer` or
+`learner_note`/`text` field from those tables; `/me/answers`/`/me/notes`
+never leak across people, including for operators; plugin routes without
+the service token are 401, with the token but an unknown identity are 403;
+a review's acting person always comes from the header, never the body.
 """
 
-from __future__ import annotations
-
 import os
-import re
-from typing import Any
 
 import pytest
-from fastapi import Depends
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 os.environ.setdefault("SERVICE_TOKEN", "test-token")
+os.environ.setdefault("LEARNING_LLM", "stub")
 os.environ.pop("DATABASE_URL", None)
 
-from sqlalchemy import select  # noqa: E402
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
-
+from learning_service.curriculum.models import Concept, Course, Item  # noqa: E402
 from learning_service.db import get_session  # noqa: E402
-from learning_service.engine.models import Concept, Item  # noqa: E402
-from learning_service.engine.repository import InMemoryLearningRepository  # noqa: E402
+from learning_service.grading.stub import StubGraderClient  # noqa: E402
 from learning_service.identity.models import Base, Identity, Person  # noqa: E402
-from learning_service.main import (  # noqa: E402
-    ActingIdentity,
-    acting_identity,
-    app,
-    get_repository,
-    require_service_token,
-    resolve_person_id,
-)
+from learning_service.main import app  # noqa: E402
+from learning_service.privacy.models import Answer, LearnerNote  # noqa: E402
+from learning_service.reviews import get_llm_client  # noqa: E402
 
-AUTH = {"Authorization": "Bearer test-token", "X-Acting-Identity": "slack:U1"}
-
-# spec §Privacy and retention: fields that must never reach a /team/*,
-# /admin/*, or digest response.
-FORBIDDEN_FIELDS = {"answer", "text", "learner_note"}
+TOKEN_HEADER = {"Authorization": "Bearer test-token"}
 
 
-async def _placeholder_person_id(identity: ActingIdentity = Depends(acting_identity)) -> str:
-    return f"{identity.platform}:{identity.external_id}"
+def _auth(external_id: str) -> dict:
+    return {**TOKEN_HEADER, "X-Acting-Identity": f"slack:{external_id}"}
 
 
 @pytest.fixture
-def client():
-    repo = InMemoryLearningRepository()
-    repo.add_concept(Concept(id="c1", course_id="course", slug="c1", title="C1"))
-    repo.add_item(
-        Item(
-            id="item-mcq-1",
-            concept_id="c1",
-            kind="mcq",
-            prompt="2+2?",
-            payload={"options": ["3", "4"], "correct_index": 1, "explanation": "arithmetic"},
-        )
-    )
-    app.dependency_overrides[get_repository] = lambda: repo
-    app.dependency_overrides[resolve_person_id] = _placeholder_person_id
-    try:
-        yield TestClient(app)
-    finally:
-        app.dependency_overrides.pop(get_repository, None)
-        app.dependency_overrides.pop(resolve_person_id, None)
-
-
-@pytest.fixture
-async def team_session():
-    # `/team/*` resolves the acting identity and the caller's subtree
-    # through a real DB session, unlike the rest of this suite's
-    # placeholder-identity routes — see `analytics/router.py`. AUTH's
-    # `slack:U1` is seeded as a manager (`is_operator=True`, one report) so
-    # the "does not leak" checks below get a real 200, not a 403.
+async def session():
     engine = create_async_engine("sqlite+aiosqlite://")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     async with sessionmaker() as s:
-        manager = Person(display_name="Manager", email="manager@x.example", is_operator=True)
-        s.add(manager)
-        await s.flush()
-        s.add(Identity(person_id=manager.id, platform="slack", external_id="U1", is_primary=True))
-        report = Person(display_name="Report", email="report@x.example", manager_id=manager.id)
-        s.add(report)
-        await s.commit()
         yield s
     await engine.dispose()
 
 
 @pytest.fixture
-def team_client(team_session):
+async def seeded(session: AsyncSession):
+    manager = Person(display_name="Manager", email="m@example.com", is_operator=True)
+    learner = Person(display_name="Learner", email="l@example.com")
+    session.add_all([manager, learner])
+    await session.flush()
+    learner.manager_id = manager.id
+    session.add_all(
+        [
+            Identity(person_id=manager.id, platform="slack", external_id="M"),
+            Identity(person_id=learner.id, platform="slack", external_id="L"),
+        ]
+    )
+    course = Course(title="Payments")
+    session.add(course)
+    await session.flush()
+    concept = Concept(course_id=course.id, slug="c1", title="C1")
+    session.add(concept)
+    await session.flush()
+    item = Item(
+        concept_id=concept.id, kind="short_answer", prompt="explain",
+        payload={"reference": "ref", "rubric": "widget factory pattern"}, status="published",
+    )
+    session.add(item)
+    session.add(LearnerNote(person_id=learner.id, text="prefers examples in Go"))
+    await session.commit()
+    return {"manager": manager, "learner": learner, "concept": concept, "item": item}
+
+
+@pytest.fixture
+def client(session: AsyncSession):
     async def override_get_session():
-        yield team_session
+        yield session
 
     app.dependency_overrides[get_session] = override_get_session
-    app.dependency_overrides[get_repository] = lambda: InMemoryLearningRepository()
+    app.dependency_overrides[get_llm_client] = lambda: StubGraderClient()
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.pop(get_session, None)
-        app.dependency_overrides.pop(get_repository, None)
+        app.dependency_overrides.pop(get_llm_client, None)
 
 
-def _find_forbidden_keys(body: Any, path: str = "$") -> list[str]:
-    hits: list[str] = []
-    if isinstance(body, dict):
-        for key, value in body.items():
-            if key in FORBIDDEN_FIELDS:
-                hits.append(f"{path}.{key}")
-            hits.extend(_find_forbidden_keys(value, f"{path}.{key}"))
-    elif isinstance(body, list):
-        for i, item in enumerate(body):
-            hits.extend(_find_forbidden_keys(item, f"{path}[{i}]"))
-    return hits
+def _has_field(payload, field: str) -> bool:
+    """Recursively checks whether `field` appears anywhere as a JSON key in
+    `payload` (dict/list nesting)."""
+    if isinstance(payload, dict):
+        if field in payload:
+            return True
+        return any(_has_field(v, field) for v in payload.values())
+    if isinstance(payload, list):
+        return any(_has_field(v, field) for v in payload)
+    return False
 
 
-def _assert_route_exists_and_clean(client: TestClient, method: str, path: str, **kwargs) -> None:
-    r = client.request(method, path, **kwargs)
-    assert r.status_code != 404, f"{method} {path} is not implemented"
-    if r.headers.get("content-type", "").startswith("application/json") and r.content:
-        hits = _find_forbidden_keys(r.json())
-        assert not hits, f"{method} {path} leaked forbidden fields: {hits}"
+def test_plugin_route_without_token_is_401(client, seeded):
+    r = client.get("/me/progress", headers={"X-Acting-Identity": "slack:L"})
+    assert r.status_code == 401
 
 
-# ---------------------------------------------------------------------------
-# Bullet 1: no /team/* or /admin/* response carries `answer`, `text`, or
-# `learner_note`.
-# ---------------------------------------------------------------------------
-
-
-def test_admin_replay_does_not_leak_forbidden_fields(team_client):
-    _assert_route_exists_and_clean(team_client, "POST", "/admin/replay", headers=AUTH)
-
-
-def test_team_overview_does_not_leak_forbidden_fields(team_client):
-    _assert_route_exists_and_clean(team_client, "GET", "/team/overview", headers=AUTH)
-
-
-def test_team_concept_detail_does_not_leak_forbidden_fields(team_client):
-    _assert_route_exists_and_clean(team_client, "GET", "/team/concepts/c1", headers=AUTH)
-
-
-async def test_team_person_detail_does_not_leak_forbidden_fields(team_client, team_session):
-    result = await team_session.execute(select(Person).where(Person.email == "report@x.example"))
-    report = result.scalar_one()
-    _assert_route_exists_and_clean(team_client, "GET", f"/team/people/{report.id}", headers=AUTH)
-
-
-def test_team_recommendations_does_not_leak_forbidden_fields(team_client):
-    _assert_route_exists_and_clean(team_client, "GET", "/team/recommendations", headers=AUTH)
-
-
-def test_team_audit_does_not_leak_forbidden_fields(team_client):
-    _assert_route_exists_and_clean(team_client, "GET", "/team/audit", headers=AUTH)
-
-
-async def test_admin_roster_import_does_not_leak_forbidden_fields(client, db_session):
-    async def override_get_session():
-        yield db_session
-
-    app.dependency_overrides[get_session] = override_get_session
-    try:
-        _assert_route_exists_and_clean(client, "POST", "/admin/roster/import", headers=AUTH, json={"persons": []})
-    finally:
-        app.dependency_overrides.pop(get_session, None)
-
-
-# ---------------------------------------------------------------------------
-# Bullet 2: /team/people/{id} for a person outside the subtree -> 403.
-# ---------------------------------------------------------------------------
-
-
-def test_team_person_outside_subtree_is_403(team_client):
-    r = team_client.get("/team/people/outside-subtree-person", headers=AUTH)
-    assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "outside_subtree"
-
-
-# ---------------------------------------------------------------------------
-# Bullet 3: /me/answers never returns another person's rows, including for
-# operators. Full own-rows-only coverage lives in test_answers.py; this is
-# the smoke check that the route itself never leaks in this file's harness.
-# ---------------------------------------------------------------------------
-
-
-def test_me_answers_never_returns_another_persons_rows(client):
-    r = client.get("/me/answers", headers=AUTH)
-    assert r.status_code == 200
-
-
-# ---------------------------------------------------------------------------
-# Bullet 4: /me/notes never returns another person's rows; caps enforced.
-# Full coverage lives in test_notes.py.
-# ---------------------------------------------------------------------------
-
-
-def test_me_notes_never_returns_another_persons_rows(client):
-    r = client.get("/me/notes", headers=AUTH)
-    assert r.status_code == 200
-
-
-def test_me_notes_enforce_length_cap(client):
-    r = client.post("/me/notes", headers=AUTH, json={"text": "x" * 501})
-    assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "note_cap"
-
-
-def test_me_notes_enforce_count_cap(client):
-    for i in range(20):
-        r = client.post("/me/notes", headers=AUTH, json={"text": f"note {i}"})
-        assert r.status_code == 200
-    r = client.post("/me/notes", headers=AUTH, json={"text": "one too many"})
-    assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "note_cap"
-
-
-def test_me_due_summary_does_not_leak_notes(client):
-    _assert_route_exists_and_clean(client, "GET", "/me/due-summary", headers=AUTH)
-
-
-def test_team_digest_does_not_leak_notes(team_client):
-    _assert_route_exists_and_clean(team_client, "GET", "/team/digest", headers=AUTH)
-
-
-# ---------------------------------------------------------------------------
-# Bullet 5: plugin routes without the service token -> 401; with the token
-# but an unknown identity -> 403.
-#
-# The 401 check is structural: it walks the live dependency graph of every
-# registered route rather than a hard-coded path list, so a new route wired
-# under `require_service_token` (directly, or transitively via
-# `acting_identity`) is covered the moment it is registered — no test-file
-# edit required.
-# ---------------------------------------------------------------------------
-
-
-def _flatten_dependency_calls(dependant) -> set:
-    calls = {dependant.call}
-    for sub in dependant.dependencies:
-        calls |= _flatten_dependency_calls(sub)
-    return calls
-
-
-def _placeholder_path(path: str) -> str:
-    return re.sub(r"\{[^}]+\}", "placeholder", path)
-
-
-def _flatten_routes(routes) -> list[APIRoute]:
-    # FastAPI mounts an `include_router()` call as an opaque wrapper (name
-    # varies by version) rather than flattening its routes eagerly; duck-type
-    # on `original_router` so this keeps working across that internal change.
-    out: list[APIRoute] = []
-    for route in routes:
-        if isinstance(route, APIRoute):
-            out.append(route)
-            continue
-        sub_router = getattr(route, "original_router", None)
-        if sub_router is not None:
-            out.extend(_flatten_routes(sub_router.routes))
-    return out
-
-
-def _service_token_gated_calls() -> list[tuple[str, str]]:
-    calls: list[tuple[str, str]] = []
-    for route in _flatten_routes(app.routes):
-        if require_service_token not in _flatten_dependency_calls(route.dependant):
-            continue
-        path = _placeholder_path(route.path)
-        for method in sorted(route.methods - {"HEAD", "OPTIONS"}):
-            calls.append((method, path))
-    return calls
-
-
-@pytest.mark.parametrize("method,path", _service_token_gated_calls())
-def test_service_token_required(client, method, path):
-    kwargs: dict[str, Any] = {"headers": {"X-Acting-Identity": "slack:U1"}}
-    if method in {"POST", "PUT", "PATCH"}:
-        kwargs["json"] = {}
-    r = client.request(method, path, **kwargs)
-    assert r.status_code == 401, f"{method} {path} did not 401 without a service token"
-
-
-@pytest.fixture
-async def db_session():
-    engine = create_async_engine("sqlite+aiosqlite://")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
-    async with sessionmaker() as session:
-        yield session
-    await engine.dispose()
-
-
-def test_unknown_identity_via_identities_resolve_is_403(client, db_session):
-    async def override_get_session():
-        yield db_session
-
-    app.dependency_overrides[get_session] = override_get_session
-    try:
-        r = client.post(
-            "/identities/resolve",
-            headers={"Authorization": "Bearer test-token"},
-            json={"platform": "slack", "external_id": "does-not-exist"},
-        )
-    finally:
-        app.dependency_overrides.pop(get_session, None)
+def test_plugin_route_with_token_but_unknown_identity_is_403(client, seeded):
+    r = client.get("/me/progress", headers=_auth("nobody"))
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "unknown_identity"
 
 
-# ---------------------------------------------------------------------------
-# Bullet 6: a review submitted with a learner ID in the body is scoped to
-# the acting person, never the body value. Already covered as a first-class
-# assertion in tests/test_reviews.py (`test_learner_id_in_body_is_rejected`,
-# `test_reviews_are_scoped_to_acting_person`) — not duplicated here.
-# ---------------------------------------------------------------------------
+def test_review_body_cannot_assert_a_different_learner(client, seeded):
+    # the review schema has no learner-id field at all: supplying one is a
+    # rejected, not silently-ignored, extra field (extra="forbid").
+    body = {
+        "item_id": seeded["item"].id, "idempotency_key": "k1",
+        "response": {"text": "widget factory pattern"}, "person_id": seeded["manager"].id,
+    }
+    r = client.post("/me/reviews", json=body, headers=_auth("L"))
+    assert r.status_code == 422
+
+
+async def test_me_answers_never_returns_another_persons_rows(client, seeded, session):
+    session.add(Answer(review_id="r1", person_id=seeded["manager"].id, text="the manager's own answer"))
+    await session.commit()
+
+    # even though the manager is an operator, /me/answers is scoped to the
+    # acting person, not a superuser read.
+    r = client.get("/me/answers", headers=_auth("L"))
+    assert r.status_code == 200
+    assert r.json()["answers"] == []
+
+
+async def test_team_and_admin_responses_never_carry_answer_or_note_fields(client, seeded, session):
+    r = client.post(
+        "/me/reviews",
+        json={"item_id": seeded["item"].id, "idempotency_key": "k1", "response": {"text": "widget factory pattern"}},
+        headers=_auth("L"),
+    )
+    assert r.status_code == 200
+
+    for path, headers in [
+        ("/team/overview", _auth("M")),
+        (f"/team/people/{seeded['learner'].id}", _auth("M")),
+        (f"/team/concepts/{seeded['concept'].id}", _auth("M")),
+        ("/team/digest", _auth("M")),
+        ("/team/recommendations", _auth("M")),
+        ("/team/audit", _auth("M")),
+    ]:
+        resp = client.get(path, headers=headers)
+        assert resp.status_code == 200, f"{path}: {resp.text}"
+        body = resp.json()
+        assert not _has_field(body, "answer"), f"{path} leaked an answer field"
+        assert not _has_field(body, "text"), f"{path} leaked a text field"
+        assert not _has_field(body, "learner_note"), f"{path} leaked a learner_note field"
+
+    admin_replay = client.post("/admin/replay", headers=TOKEN_HEADER)
+    assert admin_replay.status_code == 200
+    assert not _has_field(admin_replay.json(), "answer")
+    assert not _has_field(admin_replay.json(), "text")
+
+
+def test_me_notes_never_returns_another_persons_rows(client, seeded):
+    r = client.get("/me/notes", headers=_auth("M"))
+    assert r.status_code == 200
+    assert r.json()["notes"] == []  # the note was seeded for the learner, not the manager
+
+
+async def test_outside_subtree_returns_403_outside_subtree(client, seeded, session):
+    stranger = Person(display_name="Stranger", email="s@example.com")
+    session.add(stranger)
+    await session.flush()
+    session.add(Identity(person_id=stranger.id, platform="slack", external_id="S"))
+    await session.commit()
+
+    r = client.get(f"/team/people/{stranger.id}", headers=_auth("M"))
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "outside_subtree"

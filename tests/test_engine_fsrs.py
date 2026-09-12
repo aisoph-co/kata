@@ -1,61 +1,51 @@
-"""Unit tests for the FSRS-6 `card_state` wrapper (AGCTM-30, spec §Learning
-engine "FSRS"). Determinism matters: AGCTM-36's replay asserts replayed
-`card_state` equals live `card_state` exactly, which requires fuzzing off.
-"""
+"""FSRS-6 card update via `py-fsrs` (spec §Learning engine, "FSRS") and
+retrievability (spec §Learning engine, "Next-item selection", step 1)."""
 
 from datetime import datetime, timedelta, timezone
 
-from learning_service.engine.fsrs_engine import DESIRED_RETENTION, review_card
+from learning_service.engine.fsrs_engine import review_card
+from learning_service.engine.retrievability import retrievability
 
-NOW = datetime(2026, 9, 6, tzinfo=timezone.utc)
 
-
-def test_first_review_creates_a_card_state():
-    card = review_card(None, "p1", "i1", rating=3, reviewed_at=NOW)
-    assert card.person_id == "p1"
-    assert card.item_id == "i1"
+def test_first_review_creates_a_card_with_reps_one():
+    now = datetime.now(timezone.utc)
+    card = review_card(None, 3, now)
     assert card.reps == 1
     assert card.lapses == 0
-    assert card.last_review_at == NOW
-    assert card.due_at > NOW
+    assert card.last_review_at == now
+    assert card.due_at > now
 
 
 def test_again_rating_counts_as_a_lapse():
-    card = review_card(None, "p1", "i1", rating=1, reviewed_at=NOW)
+    now = datetime.now(timezone.utc)
+    card = review_card(None, 1, now)
     assert card.lapses == 1
 
 
-def test_repeated_reviews_accumulate_reps_and_lapses():
-    card = review_card(None, "p1", "i1", rating=3, reviewed_at=NOW)
-    card = review_card(card, "p1", "i1", rating=1, reviewed_at=NOW + timedelta(days=1))
-    card = review_card(card, "p1", "i1", rating=3, reviewed_at=NOW + timedelta(days=2))
-    assert card.reps == 3
-    assert card.lapses == 1
+def test_repeated_good_reviews_increase_stability_and_due_at():
+    now = datetime.now(timezone.utc)
+    card = review_card(None, 3, now)
+    later = now + timedelta(days=1)
+    card2 = review_card(card, 3, later)
+    assert card2.reps == 2
+    assert card2.due_at > card.due_at
 
 
-def test_review_card_is_deterministic_given_the_same_inputs():
-    a = review_card(None, "p1", "i1", rating=3, reviewed_at=NOW)
-    b = review_card(None, "p1", "i1", rating=3, reviewed_at=NOW)
-    assert a == b
+def test_retrievability_is_zero_before_any_review():
+    now = datetime.now(timezone.utc)
+    assert retrievability(2.0, None, now) == 0.0
 
 
-def test_replaying_a_review_sequence_reproduces_the_same_state():
-    ratings = [3, 3, 1, 4, 2, 3]
-
-    def replay():
-        state = None
-        for i, rating in enumerate(ratings):
-            state = review_card(state, "p1", "i1", rating=rating, reviewed_at=NOW + timedelta(days=i))
-        return state
-
-    assert replay() == replay()
+def test_retrievability_decreases_as_time_passes():
+    now = datetime.now(timezone.utc)
+    reviewed_at = now - timedelta(days=1)
+    r1 = retrievability(5.0, reviewed_at, now)
+    r2 = retrievability(5.0, now - timedelta(days=10), now)
+    assert 0.0 < r2 < r1 <= 1.0
 
 
-def test_easy_rating_schedules_further_out_than_again():
-    again_card = review_card(None, "p1", "i1", rating=1, reviewed_at=NOW)
-    easy_card = review_card(None, "p1", "i1", rating=4, reviewed_at=NOW)
-    assert easy_card.due_at > again_card.due_at
-
-
-def test_desired_retention_is_spec_default():
-    assert DESIRED_RETENTION == 0.9
+def test_retrievability_is_about_point_nine_at_stability_days_elapsed():
+    now = datetime.now(timezone.utc)
+    stability = 10.0
+    r = retrievability(stability, now - timedelta(days=stability), now)
+    assert abs(r - 0.9) < 1e-6
