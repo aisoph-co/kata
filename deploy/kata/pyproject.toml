@@ -1,7 +1,7 @@
 [project]
-name = "hermes-kata"
+name = "kata-deploy"
 version = "0.1.0"
-description = "Hermes plugin: the entire integration surface between Hermes and the Kata learning service."
+description = "Tests for deploy/kata config scripts (apply-config.sh toolset lockdown and session-pruning assertions)."
 requires-python = ">=3.11"
 dependencies = []
 
