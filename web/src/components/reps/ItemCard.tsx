@@ -76,13 +76,15 @@ export function ItemCard({ item, session, onNext }: { item: ItemPublic; session:
   const [rating, setRating] = useState<number | null>(null)
   const [text, setText] = useState('')
   const [confidence, setConfidence] = useState<number | null>(null)
-  const [result, setResult] = useState<ReviewResult | null>(null)
-  const [replayResult, setReplayResult] = useState<ReviewResult | null>(null)
+  // One slot for whatever is currently on screen — a fresh grade or a
+  // replayed one — never both at once: the done check wants a retried
+  // submission to render *identically* to the original, not alongside it.
+  const [display, setDisplay] = useState<{ result: ReviewResult; replay: boolean } | null>(null)
   const [isPending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const state = { choice, choices, rating, text }
-  const graded = result !== null || replayResult !== null
+  const graded = display !== null
 
   function submit(bypass: boolean) {
     setPending(true)
@@ -96,16 +98,13 @@ export function ItemCard({ item, session, onNext }: { item: ItemPublic; session:
     if (confidence !== null) body.confidence = confidence
 
     apiFetch<ReviewResult>('/me/reviews', { persona: { header: session.header }, method: 'POST', body })
-      .then((data) => {
-        setResult(data)
-        setReplayResult(null)
-      })
+      .then((data) => setDisplay({ result: data, replay: false }))
       .catch((cause: unknown) => {
         // Failure path B (flow 4b): a replayed submission is a 409 whose
         // body is the original `ReviewResult` — rendered exactly as a fresh
         // 200 would be, never as an error state.
         if (cause instanceof ApiError && cause.status === 409) {
-          setReplayResult(cause.body as ReviewResult)
+          setDisplay({ result: cause.body as ReviewResult, replay: true })
           return
         }
         setError(cause instanceof Error ? cause.message : 'Could not submit that review.')
@@ -182,7 +181,7 @@ export function ItemCard({ item, session, onNext }: { item: ItemPublic; session:
           </button>
         )}
         {graded && (
-          <button data-testid="submit-again" disabled={isPending} onClick={() => submit(result?.bypassed ?? false)}>
+          <button data-testid="submit-again" disabled={isPending} onClick={() => submit(display?.result.bypassed ?? false)}>
             Submit again
           </button>
         )}
@@ -199,8 +198,7 @@ export function ItemCard({ item, session, onNext }: { item: ItemPublic; session:
       </div>
 
       {error && <p className="reps-error">{error}</p>}
-      {result && <ResultPanel result={result} />}
-      {replayResult && <ResultPanel result={replayResult} replay />}
+      {display && <ResultPanel result={display.result} replay={display.replay} />}
     </div>
   )
 }
