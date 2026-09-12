@@ -1,80 +1,117 @@
-"""Thin HTTP client binding the plugin to the learning service's frozen
-contract (core spec's API auth table): `Authorization: Bearer
-$LEARNING_SERVICE_TOKEN` + `X-Acting-Identity`, JSON in and out.
+"""HTTP client for the learning service core.
 
-Stdlib-only (no `requests`/`httpx` dependency) — this plugin's own test
-suite talks to fakes, not this client, so the extra dependency would only
-serve production traffic.
+The one place in this plugin that knows the service token and the
+`X-Acting-Identity` header shape (docs/adapter-contract.md job 2; spec
+"Decisions" table, "Identity assertion header").
 """
+
 from __future__ import annotations
 
-import json
 import os
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
-from typing import Any
-from urllib.parse import urlencode
+from typing import Any, Mapping, Optional
+
+import httpx
 
 
-@dataclass
-class ServiceResponse:
-    status: int
-    data: Any
-    error_code: str | None = None
+@dataclass(frozen=True)
+class ActingIdentity:
+    """A `(platform, external_id[, alt_id])` triple — never accepted from
+    model output, only from a trusted transport context (adapter-contract
+    job 1)."""
+
+    platform: str
+    external_id: str
+    alt_id: Optional[str] = None
+
+    def header_value(self) -> str:
+        value = f"{self.platform}:{self.external_id}"
+        if self.alt_id:
+            value += f";alt={self.alt_id}"
+        return value
+
+
+class LearningServiceError(Exception):
+    """A core error response: `{"detail": {"code": ..., "message": ...}}`
+    (learning/openapi.yaml `ErrorResponse`)."""
+
+    def __init__(self, status_code: int, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.status_code = status_code
+        self.code = code
+        self.message = message
 
 
 class LearningServiceClient:
-    def __init__(self, base_url: str | None = None, token: str | None = None):
-        self.base_url = (base_url or os.environ.get("LEARNING_SERVICE_URL", "")).rstrip("/")
-        self.token = token or os.environ.get("LEARNING_SERVICE_TOKEN", "")
+    """Thin wrapper over the core's HTTP API. Every call carries the service
+    token; calls made on behalf of a learner also carry the bound acting
+    identity."""
 
-    def _headers(self, identity: str | None) -> dict[str, str]:
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
-        if identity:
-            headers["X-Acting-Identity"] = identity
-        return headers
+    def __init__(self, base_url: str, token: str, *, http: Optional[httpx.Client] = None) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._token = token
+        self._http = http or httpx.Client(timeout=10.0)
+
+    @classmethod
+    def from_env(cls) -> "LearningServiceClient":
+        return cls(os.environ["LEARNING_SERVICE_URL"], os.environ["LEARNING_SERVICE_TOKEN"])
 
     def request(
         self,
         method: str,
         path: str,
-        identity: str | None,
-        payload: dict[str, Any] | None = None,
-    ) -> ServiceResponse:
-        url = f"{self.base_url}{path}"
-        payload = payload or {}
-        body = None
-        if method.upper() == "GET":
-            if payload:
-                url = f"{url}?{urlencode(payload)}"
-        else:
-            body = json.dumps(payload).encode("utf-8")
-
-        request = urllib.request.Request(
-            url, data=body, method=method.upper(), headers=self._headers(identity)
+        *,
+        identity: Optional[ActingIdentity] = None,
+        params: Optional[Mapping[str, Any]] = None,
+        json_body: Optional[Mapping[str, Any]] = None,
+    ) -> Any:
+        headers = {"Authorization": f"Bearer {self._token}"}
+        if identity is not None:
+            headers["X-Acting-Identity"] = identity.header_value()
+        response = self._http.request(
+            method,
+            f"{self._base_url}{path}",
+            headers=headers,
+            params=params,
+            json=json_body,
         )
-        try:
-            with urllib.request.urlopen(request) as resp:
-                raw = resp.read().decode("utf-8")
-                return ServiceResponse(status=resp.status, data=json.loads(raw) if raw else None)
-        except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8")
-            data = json.loads(raw) if raw else {}
-            return ServiceResponse(status=exc.code, data=data, error_code=data.get("error"))
+        if response.status_code >= 400:
+            detail: Mapping[str, Any] = {}
+            try:
+                detail = response.json().get("detail", {}) or {}
+            except ValueError:
+                pass
+            raise LearningServiceError(
+                response.status_code,
+                str(detail.get("code", "unknown_error")),
+                str(detail.get("message", response.text)),
+            )
+        if response.status_code == 204 or not response.content:
+            return None
+        return response.json()
 
     def resolve_identity(
-        self, platform: str, external_id: str, alt_id: str | None = None
-    ) -> dict[str, Any] | None:
-        """`POST /identities/resolve` — exact match, then `alt_id`, else
-        unknown. Never auto-creates (core spec invariant)."""
-        payload: dict[str, Any] = {"platform": platform, "external_id": external_id}
+        self, platform: str, external_id: str, alt_id: Optional[str] = None
+    ) -> Optional[dict]:
+        """`POST /identities/resolve`. Returns `None` on `unknown_identity`
+        (403) — refuse, never auto-create (core spec invariant, spec §2)."""
+        body: dict = {"platform": platform, "external_id": external_id}
         if alt_id:
-            payload["alt_id"] = alt_id
-        response = self.request("POST", "/identities/resolve", identity=None, payload=payload)
-        if response.status == 403:
-            return None
-        return response.data
+            body["alt_id"] = alt_id
+        try:
+            return self.request("POST", "/identities/resolve", json_body=body)
+        except LearningServiceError as exc:
+            if exc.code == "unknown_identity":
+                return None
+            raise
+
+    def is_manager(self, identity: ActingIdentity) -> bool:
+        """`is_manager` = whether `/team/overview` 403s for this identity
+        (spec §2, "Identity hook")."""
+        try:
+            self.request("GET", "/team/overview", identity=identity)
+            return True
+        except LearningServiceError as exc:
+            if exc.code == "not_a_manager":
+                return False
+            raise

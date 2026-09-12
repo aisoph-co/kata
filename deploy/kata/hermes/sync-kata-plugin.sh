@@ -9,10 +9,11 @@
 # Syncs the plugin baked into this image (/opt/kata/plugins/hermes-kata) onto
 # the persistent volume with a delete-first copy, so a stale directory from
 # an earlier manual deploy can never win: Hermes's plugin manager loads every
-# directory under $HERMES_HOME/.hermes/plugins/ (plugins/hermes-kata/README.md),
-# and a stale copy's handlers taking precedence over the current ones is the
-# failure this guards. Delete-first, not overwrite-in-place, so a file removed
-# upstream also disappears here — never leave a backup beside it.
+# directory under $HERMES_HOME/.hermes/plugins/ (plugins/hermes-kata/README.md
+# "Installing into the Kata Hermes instance"), and the 2026-09-10 incident
+# was exactly a stale copy's handlers taking precedence over the current
+# ones. Delete-first, not overwrite-in-place, so a file removed upstream
+# also disappears here — never leave a backup beside it (KATA-31).
 set -eu
 
 HOME_DIR="${HERMES_HOME:-/opt/data}"

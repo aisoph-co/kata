@@ -1,87 +1,69 @@
-"""§8 MCQ/MSQ rendering tests.
+"""Spec §8: mcq/msq items render only through `clarify`, never as chat text;
+msq resolves to a set (`response.choices`), mcq to a single choice."""
 
-No new rendering code to test — the relay layer already turns a `clarify`
-call into native components per platform. What this plugin owns is: the
-system-prompt instruction drives the two distinct `clarify` shapes, and a
-resolved multi-select reply reaches `submit_review` as a `choices` array.
-"""
-from conftest import FakeSessionStore
+from __future__ import annotations
 
-from hermes_kata.forwarder import make_forwarder
-from hermes_kata.prompts import MCQ_MSQ_INSTRUCTION
+import pytest
+from fakes import FakePluginContext
 
+from hermes_kata.mcq import (
+    SECTION_ID,
+    SYSTEM_PROMPT_MCQ_RENDERING,
+    clarify_kwargs_for_item,
+    register_mcq_rendering_section,
+    submit_review_response,
+)
 
-class FakeClarifyingAgent:
-    """Stands in for a Hermes agent turn following MCQ_MSQ_INSTRUCTION:
-    given an item, produce the `clarify` call it would make."""
+MCQ_ITEM = {
+    "kind": "mcq",
+    "prompt": "Which keyword declares a block-scoped variable in JS?",
+    "options": ["var", "let", "function", "class"],
+}
 
-    def render(self, item):
-        if item["kind"] == "mcq":
-            return {"question": item["prompt"], "choices": item["options"], "multi_select": False}
-        if item["kind"] == "msq":
-            return {"question": item["prompt"], "choices": item["options"], "multi_select": True}
-        raise ValueError(item["kind"])
-
-
-def test_instruction_never_bakes_in_item_text():
-    # The instruction is a fixed, item-independent rule — nothing here
-    # should ever leak a specific item's options as chat text.
-    assert "choices=" in MCQ_MSQ_INSTRUCTION
-    assert "multi_select=false" in MCQ_MSQ_INSTRUCTION
-    assert "multi_select=true" in MCQ_MSQ_INSTRUCTION
+MSQ_ITEM = {
+    "kind": "msq",
+    "prompt": "Select every statement that is true of the DoD.",
+    "options": ["A", "B", "C", "D"],
+}
 
 
-def test_mcq_item_renders_via_clarify_with_multi_select_false():
-    agent = FakeClarifyingAgent()
-    item = {"kind": "mcq", "prompt": "Which is a prime?", "options": ["4", "6", "7", "8"]}
-
-    call = agent.render(item)
-
-    assert call["choices"] == item["options"]
-    assert call["multi_select"] is False
+def test_mcq_clarify_call_has_choices_and_no_multi_select():
+    kwargs = clarify_kwargs_for_item(MCQ_ITEM)
+    assert kwargs["question"] == MCQ_ITEM["prompt"]
+    assert kwargs["choices"] == MCQ_ITEM["options"]
+    assert kwargs["multi_select"] is False
 
 
-def test_msq_item_renders_via_clarify_with_multi_select_true():
-    agent = FakeClarifyingAgent()
-    item = {"kind": "msq", "prompt": "Select all primes", "options": ["4", "6", "7", "8"]}
-
-    call = agent.render(item)
-
-    assert call["choices"] == item["options"]
-    assert call["multi_select"] is True
+def test_msq_clarify_call_sets_multi_select_true():
+    kwargs = clarify_kwargs_for_item(MSQ_ITEM)
+    assert kwargs["choices"] == MSQ_ITEM["options"]
+    assert kwargs["multi_select"] is True
 
 
-class FakeSubmitReviewClient:
-    def __init__(self):
-        self.sent = None
-
-    def request(self, method, path, identity, payload):
-        self.sent = {"method": method, "path": path, "identity": identity, "payload": payload}
-
-        class _Response:
-            error_code = None
-            data = {"grade": 1.0}
-
-        return _Response()
-
-    def resolve_identity(self, **kwargs):
-        raise AssertionError("session identity was bound; should not need job_identity")
+def test_non_choice_item_kind_is_rejected():
+    with pytest.raises(ValueError):
+        clarify_kwargs_for_item({"kind": "short_answer", "prompt": "x", "options": []})
 
 
-def test_msq_multi_option_reply_resolves_to_submit_review_choices_array():
-    client = FakeSubmitReviewClient()
-    handler = make_forwarder(client, "POST", "/me/reviews")
-    session_store = FakeSessionStore()
-    session_store.set("sess-1", "kata_person", {"id": "person-1", "platform": "slack", "external_id": "U1"})
+def test_mcq_tap_resolves_to_a_single_choice_payload():
+    assert submit_review_response(MCQ_ITEM, 1) == {"choice": 1}
 
-    handler(
-        session_store,
-        "sess-1",
-        item_id="item-1",
-        idempotency_key="key-1",
-        response={"choices": [1, 3]},
-    )
 
-    payload = client.sent["payload"]
-    assert isinstance(payload["response"]["choices"], list)
-    assert payload["response"]["choices"] == [1, 3]
+def test_msq_selection_resolves_to_a_choices_array_payload():
+    assert submit_review_response(MSQ_ITEM, [0, 2]) == {"choices": [0, 2]}
+
+
+def test_msq_selection_is_a_set_never_a_single_choice():
+    result = submit_review_response(MSQ_ITEM, ["1", "3"])
+    assert isinstance(result["choices"], list)
+    assert result == {"choices": [1, 3]}
+
+
+# Wiring — without this, SYSTEM_PROMPT_MCQ_RENDERING above is defined but
+# never reaches the live prompt, so nothing tells the agent to call clarify
+# instead of typing options as chat text.
+def test_register_mcq_rendering_section_puts_the_instruction_in_the_prompt():
+    ctx = FakePluginContext()
+    register_mcq_rendering_section(ctx)
+    assert ctx.system_prompt_sections[SECTION_ID]["content"] == SYSTEM_PROMPT_MCQ_RENDERING
+    assert ctx.system_prompt_sections[SECTION_ID]["position"] == "after_memory"

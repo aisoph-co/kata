@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Framework-neutral tool catalog for the learning service core (spec: docs/superpowers/specs/2026-09-05-learning-service-core-design.md, section 'Framework independence'). Every runtime adapter (Hermes, or any later framework) loads this file and registers the tools in its own way, forwarding calls to `endpoint` with the service token and the turn's bound acting identity. Adding a tool means editing this file only.",
   "tools": [
     {
@@ -28,6 +28,17 @@
           "response": {
             "description": "{choice: int} for mcq, {choices: [int]} for msq, {rating: 1-4} for self_rated, {text: str} for short_answer.",
             "type": "object"
+          },
+          "confidence": {
+            "description": "Stated before the reveal, 1-5. Not the same field as self_rated's post-reveal rating.",
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "maximum": 5
+          },
+          "bypassed": {
+            "description": "\"Just tell me\": the learner asked for the answer instead of answering.",
+            "type": "boolean",
+            "default": false
           }
         },
         "additionalProperties": false
@@ -158,7 +169,19 @@
       "name": "get_team_digest",
       "description": "For a manager: the weekly digest payload for their subtree.",
       "endpoint": { "method": "GET", "path": "/team/digest" },
-      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "description": "Digest window in days; period_start/period_end echo this window.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 90,
+            "default": 7
+          }
+        },
+        "additionalProperties": false
+      }
     },
     {
       "name": "set_team_focus",
