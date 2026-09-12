@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -21,6 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from learning_service import __version__
 from learning_service.db import get_session
+from learning_service.engine.openrouter import LLMClient, OpenRouterClient
+from learning_service.engine.sql_repository import SqlLearningRepository
+from learning_service.engine.stub_grader import StubGraderClient
 from learning_service.identity.schemas import (
     IdentityLinkRequest,
     IdentityOut,
@@ -151,6 +155,36 @@ async def resolve_person_id(
     return person.id
 
 
+async def get_repository(session: AsyncSession = Depends(get_session)) -> AsyncIterator[SqlLearningRepository]:
+    """Every `/me/*`, `/team/*`, and `/admin/replay` route's engine state
+    (`review`, `card_state`, `concept_state`, curriculum, focus): one
+    `SqlLearningRepository` per request, hydrated from the same session
+    `resolve_person_id` already resolves identities through, so engine
+    state and roster/identity state are always the same transaction.
+    """
+    repo = SqlLearningRepository(session)
+    await repo.load()
+    yield repo
+
+
+def _build_llm_client() -> LLMClient:
+    # `LEARNING_LLM=stub` swaps in a deterministic grader so demos and tests
+    # never call OpenRouter or spend money; unset, the default stays
+    # OpenRouter. A missing `OPENROUTER_API_KEY` only fails a `short_answer`
+    # review at grading time, not startup.
+    if os.environ.get("LEARNING_LLM") == "stub":
+        return StubGraderClient()
+    return OpenRouterClient()
+
+
+# Constructed once at import time.
+_llm_client: LLMClient = _build_llm_client()
+
+
+def get_llm_client() -> LLMClient:
+    return _llm_client
+
+
 @app.get("/health")
 async def health() -> dict:
     return {
@@ -255,3 +289,27 @@ app.include_router(_topics_router)
 from learning_service.concept_graph import router as _concept_graph_router  # noqa: E402
 
 app.include_router(_concept_graph_router)
+
+from learning_service.engine.router import router as _engine_router  # noqa: E402
+
+app.include_router(_engine_router)
+
+from learning_service.admin import router as _admin_router  # noqa: E402
+
+app.include_router(_admin_router)
+
+from learning_service.progress.router import router as _progress_router  # noqa: E402
+
+app.include_router(_progress_router)
+
+from learning_service.answers import router as _answers_router  # noqa: E402
+
+app.include_router(_answers_router)
+
+from learning_service.notes import router as _notes_router  # noqa: E402
+
+app.include_router(_notes_router)
+
+from learning_service.analytics.router import router as _analytics_router  # noqa: E402
+
+app.include_router(_analytics_router)
