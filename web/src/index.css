@@ -1,0 +1,97 @@
+/* Minimal styling only — composes the design system's dark theme + cyan
+ * accent tokens (build-day/design/DESIGN-SYSTEM.md) without pulling in the
+ * full kit; W2-W4 own the real screens and component library wiring. */
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  background: #020617; /* slate-950 */
+  color: #e2e8f0; /* slate-200 */
+  font-family:
+    'Inter',
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+
+.gate-screen {
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.gate-card {
+  width: 100%;
+  max-width: 24rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  text-align: center;
+  padding: 2rem;
+  border-radius: 0.75rem;
+  border: 1px solid #1e293b; /* slate-800 */
+  background: #0f172a; /* slate-900 */
+}
+
+.gate-card--dashed {
+  border-style: dashed;
+}
+
+.gate-wordmark {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: #22d3ee; /* cyan-400 */
+}
+
+.gate-title {
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.gate-blurb,
+.gate-status {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #94a3b8; /* slate-400 */
+}
+
+.gate-status--error {
+  color: #fb7185; /* rose-400 */
+}
+
+.gate-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+button,
+select {
+  font: inherit;
+  border-radius: 0.5rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+  background: #22d3ee; /* cyan-400 */
+  color: #020617;
+}
+
+button:not([data-primary]):not(:first-of-type) {
+  background: transparent;
+  border-color: #1e293b;
+  color: #e2e8f0;
+}
+
+select {
+  background: #0f172a;
+  color: #e2e8f0;
+  border-color: #1e293b;
+}
