@@ -237,6 +237,39 @@ def test_register_creates_digest_jobs_when_fully_configured(plugin_module, monke
         assert job["toolset"] == "learning"
 
 
+def test_a_cron_triggered_tool_call_resolves_via_kata_job_identities_env(plugin_module, monkeypatch):
+    """KATA-24 fix round 2: the reported job (`kata-demo-quiz-B-
+    C0BVDPW43PE`, created directly against Hermes's cron API, never through
+    `/kata-sync-digests`) previously had nothing to resolve identity from —
+    a tool call carrying only its `job_name` (no session, the cron-triggered
+    shape) raised `no bound identity for this tool call`. `KATA_JOB_IDENTITIES`
+    set before `register(ctx)` must let that exact call through instead."""
+    monkeypatch.setenv("KATA_JOB_IDENTITIES", '{"kata-demo-quiz-B-C0BVDPW43PE": "slack:C0BVDPW43PE"}')
+
+    LearningServiceClient = plugin_module.LearningServiceClient
+    seen = []
+
+    def fake_request(self, method, path, *, identity=None, params=None, json_body=None):
+        seen.append({"method": method, "path": path, "identity": identity})
+        return {"grade": 1.0, "correct": True}
+
+    monkeypatch.setattr(LearningServiceClient, "request", fake_request)
+
+    ctx = FakePluginContext()
+    plugin_module.register(ctx)
+
+    submit_review = ctx.tools["submit_review"]["handler"]
+    submit_review(
+        {"item_id": "lm-1", "idempotency_key": "k1", "response": {"choice": 1}},
+        session_id=None,
+        job_name="kata-demo-quiz-B-C0BVDPW43PE",
+    )
+
+    assert len(seen) == 1
+    assert seen[0]["identity"].platform == "slack"
+    assert seen[0]["identity"].external_id == "C0BVDPW43PE"
+
+
 def test_register_refuses_an_unknown_identity_before_any_tool_call(plugin_module, monkeypatch):
     LearningServiceClient = plugin_module.LearningServiceClient
     monkeypatch.setattr(

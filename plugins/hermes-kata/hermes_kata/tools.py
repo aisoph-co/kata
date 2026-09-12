@@ -72,8 +72,13 @@ class JobIdentityRegistry:
     from a cron-triggered turn (no `MessageEvent`, no `pre_gateway_dispatch`)
     can still resolve identity from "the job's own recorded platform/
     external-id instead of failing closed on a missing header" (spec §1).
-    Empty until a digest-scheduling issue populates it — this plugin build
-    ships no cron jobs (spec §6, tracked separately).
+    Populated by `digest.py` at job-creation time for a job this plugin
+    itself planned, and from `KATA_JOB_IDENTITIES` (`job_identities_from_env`,
+    below) at plugin registration for a job created some other way — this
+    in-process registry never sees a `hermes cron create` run directly
+    against Hermes (e.g. a demo/ad hoc job made outside `/kata-sync-digests`),
+    so that job's binding has to come from durable config instead
+    (KATA-24 fix round 2).
     """
 
     def __init__(self) -> None:
@@ -89,6 +94,41 @@ class JobIdentityRegistry:
             return None
         with self._lock:
             return self._data.get(job_name)
+
+
+def job_identities_from_env(raw: Optional[str]) -> dict[str, ActingIdentity]:
+    """Parse `KATA_JOB_IDENTITIES` (deploy config) into `job_name ->
+    ActingIdentity` bindings — durable metadata for a cron job this plugin
+    never created itself, so `digest.py` never had a chance to register it
+    (KATA-24 fix round 2: a job created directly against Hermes's cron API,
+    not by `/kata-sync-digests`). Loaded once at `register(ctx)`, before any
+    `/kata-sync-digests` run, so a fresh deploy can already resolve a job
+    that config names.
+
+    `raw` is a JSON object, `{"<job-name>": "<platform>:<external_id>", ...}`
+    — the same `platform:external_id` shape `digest.DigestRecipient.identity`
+    already uses. Unset/blank is a no-op, same convention as
+    `LEARNING_SERVICE_SRC`/`KATA_TOOLS_JSON` elsewhere in this plugin. A
+    value that isn't valid JSON, isn't an object, or has an entry that
+    doesn't parse to a non-empty platform/external_id is skipped — one bad
+    or malformed entry must never keep every other binding (or plugin
+    registration itself) from loading."""
+    if not raw or not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    identities: dict[str, ActingIdentity] = {}
+    for name, value in parsed.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            continue
+        platform, sep, external_id = value.partition(":")
+        if sep and platform and external_id:
+            identities[name] = ActingIdentity(platform=platform, external_id=external_id)
+    return identities
 
 
 def make_identity_resolver(

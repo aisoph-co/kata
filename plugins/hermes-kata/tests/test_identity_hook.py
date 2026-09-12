@@ -20,7 +20,8 @@ from hermes_kata.identity import (
     SessionStoreHandle,
     make_bind_identity,
 )
-from hermes_kata.tools import JobIdentityRegistry, make_identity_resolver
+from hermes_kata.client import ActingIdentity
+from hermes_kata.tools import JobIdentityRegistry, job_identities_from_env, make_identity_resolver
 
 
 def _event(platform="slack", user_id="U42"):
@@ -218,3 +219,48 @@ def test_unlinked_user_tool_call_raises_not_a_tool_error_reply():
 
     with pytest.raises(LookupError):
         resolver(session_id="some-session-id")
+
+
+# --- KATA-24 fix round 2: job_identities_from_env (durable binding for a --
+# --- cron job this plugin never itself created) --------------------------
+
+
+def test_job_identities_from_env_parses_the_reported_demo_job():
+    raw = '{"kata-demo-quiz-B-C0BVDPW43PE": "slack:C0BVDPW43PE"}'
+    assert job_identities_from_env(raw) == {
+        "kata-demo-quiz-B-C0BVDPW43PE": ActingIdentity(platform="slack", external_id="C0BVDPW43PE")
+    }
+
+
+def test_job_identities_from_env_is_a_no_op_when_unset_or_blank():
+    assert job_identities_from_env(None) == {}
+    assert job_identities_from_env("") == {}
+    assert job_identities_from_env("   ") == {}
+
+
+def test_job_identities_from_env_skips_malformed_json_rather_than_raising():
+    assert job_identities_from_env("not json") == {}
+    assert job_identities_from_env("[1, 2, 3]") == {}
+
+
+def test_job_identities_from_env_skips_only_the_one_bad_entry():
+    raw = '{"good-job": "slack:C1", "bad-job": "no-colon-here", "other-good-job": "telegram:T1"}'
+    assert job_identities_from_env(raw) == {
+        "good-job": ActingIdentity(platform="slack", external_id="C1"),
+        "other-good-job": ActingIdentity(platform="telegram", external_id="T1"),
+    }
+
+
+def test_job_identities_from_env_feeds_the_registry_the_resolver_reads():
+    # End to end: the exact wiring `register(ctx)` does (env -> registry ->
+    # resolver), against the exact job name reported in KATA-24.
+    registry = JobIdentityRegistry()
+    for name, identity in job_identities_from_env(
+        '{"kata-demo-quiz-B-C0BVDPW43PE": "slack:C0BVDPW43PE"}'
+    ).items():
+        registry.set(name, identity)
+
+    resolver = make_identity_resolver(SessionIdentityCache(), registry, SessionStoreHandle())
+    identity = resolver(session_id=None, job_name="kata-demo-quiz-B-C0BVDPW43PE")
+
+    assert identity == ActingIdentity(platform="slack", external_id="C0BVDPW43PE")
