@@ -1,0 +1,28 @@
+{
+  "_note": "Import payload for POST /admin/roster/import. Top-level key is `persons` and each person carries exactly the four fields RosterImportPerson accepts; everything the frozen API cannot carry sits under `_seed` and is stripped by load_seed.py before the request is sent. The tree is one manager (Quinn), two sub-managers (Daniel, Yong Yi) and seven leaves (five juniors, the PM and the UXD) — the shape the core spec's golden scenario asks for, and the shape of our own team per board §12.",
+  "_seed_note": "`role` has no column in the core (`person` stores no role; see core design §Domain model — 'Manager is not a stored role'), so it lives here for the personas model only. `is_operator` IS a person column but RosterImportPerson cannot set it — see OPEN-QUESTIONS.md Q4. `identities` beyond slack_user_id are created by load_seed.py through POST /me/link-code + POST /identities/link, which needs no schema change.",
+  "_roster_note": "Names are thangquynho's, 2026-09-06 (AGCTM-12 comment thread). Surnames are invented here because the email convention needs them; the first names are the fixed part. The PM and the UXD report to the tech lead rather than to a senior SWE — a designer and a PM sitting outside the engineering chain is the shape that makes the 0:55 quiz beat work, because the nine who answer are exactly the tech lead's org minus the tech lead.",
+  "_real_identity_note": "AGCTM-46's four priority seats get real emails/Slack IDs in place of the @ferry.example placeholders: Quinn (tech lead), Yong Yi Tan (senior SWE), Shane Delaney (PM), Hugo Marchetti (junior SWE). Daniel Okonkwo (senior SWE) and Mei Lin Chua (UXD) stay unseated per that ticket's done-check (\"only 4 real accounts\").",
+  "persons": [
+    {"email": "thangquynho@gmail.com",  "display_name": "Quinn Halloran",  "manager_email": null,                            "slack_user_id": "U0C03BWUVEE",
+     "_seed": {"role": "tech_lead",   "is_operator": true,  "identities": [{"platform": "web", "external_id": "auth0|ferry-01"}]}},
+    {"email": "daniel.okonkwo@ferry.example",  "display_name": "Daniel Okonkwo",  "manager_email": "thangquynho@gmail.com",  "slack_user_id": "U0FERRY02",
+     "_seed": {"role": "senior_swe", "is_operator": false, "identities": [{"platform": "web", "external_id": "auth0|ferry-02"}]}},
+    {"email": "wyyworks@gmail.com",      "display_name": "Yong Yi Tan",     "manager_email": "thangquynho@gmail.com",  "slack_user_id": "U0BVDPP22QL",
+     "_seed": {"role": "senior_swe", "is_operator": false, "identities": [{"platform": "web", "external_id": "auth0|ferry-03"}]}},
+    {"email": "duyk16@gmail.com",   "display_name": "Shane Delaney",   "manager_email": "thangquynho@gmail.com",  "slack_user_id": "U0BV21HFZ47",
+     "_seed": {"role": "pm",         "is_operator": false, "identities": [{"platform": "whatsapp", "external_id": "447700900104"}, {"platform": "web", "external_id": "auth0|ferry-04"}]}},
+    {"email": "meilin.chua@ferry.example",     "display_name": "Mei Lin Chua",    "manager_email": "thangquynho@gmail.com",  "slack_user_id": "U0FERRY05",
+     "_seed": {"role": "uxd",        "is_operator": false, "identities": [{"platform": "whatsapp", "external_id": "447700900105"}, {"platform": "web", "external_id": "auth0|ferry-05"}]}},
+    {"email": "camluong.nguyen@gmail.com",  "display_name": "Hugo Marchetti",  "manager_email": "daniel.okonkwo@ferry.example",  "slack_user_id": "U0C01E6F2J2",
+     "_seed": {"role": "junior_swe", "is_operator": false, "identities": [{"platform": "whatsapp", "external_id": "447700900106"}, {"platform": "web", "external_id": "auth0|ferry-06"}]}},
+    {"email": "julian.reyes@ferry.example",    "display_name": "Julian Reyes",    "manager_email": "daniel.okonkwo@ferry.example",  "slack_user_id": "U0FERRY07",
+     "_seed": {"role": "junior_swe", "is_operator": false, "identities": [{"platform": "web", "external_id": "auth0|ferry-07"}]}},
+    {"email": "victor.almeida@ferry.example",  "display_name": "Victor Almeida",  "manager_email": "daniel.okonkwo@ferry.example",  "slack_user_id": "U0FERRY08",
+     "_seed": {"role": "junior_swe", "is_operator": false, "identities": [{"platform": "web", "external_id": "auth0|ferry-08"}]}},
+    {"email": "titus.nakamura@ferry.example",  "display_name": "Titus Nakamura",  "manager_email": "wyyworks@gmail.com",      "slack_user_id": "U0FERRY09",
+     "_seed": {"role": "junior_swe", "is_operator": false, "identities": [{"platform": "signal", "external_id": "8f14e45f-ce5b-4f2c-9a3d-1b7c0d2e5a08"}, {"platform": "web", "external_id": "auth0|ferry-09"}]}},
+    {"email": "nushka.petrova@ferry.example",  "display_name": "Nushka Petrova",  "manager_email": "wyyworks@gmail.com",      "slack_user_id": "U0FERRY10",
+     "_seed": {"role": "junior_swe", "is_operator": false, "identities": [{"platform": "signal", "external_id": "c9a0b1d2-3e4f-4a5b-8c6d-7e8f9a0b1c10"}, {"platform": "web", "external_id": "auth0|ferry-10"}]}}
+  ]
+}

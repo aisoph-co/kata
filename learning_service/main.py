@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from learning_service import __version__
@@ -193,6 +194,18 @@ async def health() -> dict:
         "version": __version__,
         "database": "configured" if os.environ.get("DATABASE_URL") else "unconfigured",
     }
+
+
+@app.get("/health/db")
+async def health_db(session: AsyncSession = Depends(get_session)) -> dict:
+    # A real round trip, not just "DATABASE_URL is set" (that's `/health`'s
+    # job) — Railway's deploy done-check (RUNBOOK.md "Services") wants proof
+    # Postgres is actually reachable, e.g. right after a migration.
+    try:
+        await session.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001 — any DB failure is this route's one job to report
+        raise _error(503, "database_unavailable", str(exc)) from exc
+    return {"status": "ok", "database": "reachable"}
 
 
 @app.get("/whoami")

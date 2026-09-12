@@ -1,0 +1,624 @@
+[
+  {
+    "slug": "mr-1",
+    "concept": "money-representation",
+    "kind": "mcq",
+    "prompt": "A merchant is paid \u00a51,250 (JPY). Our `Money` type stores an integer plus a currency. What integer do we store?",
+    "payload": {
+      "options": [
+        "125000 \u2014 always two decimal places",
+        "1250 \u2014 JPY has zero decimal places",
+        "12.50 \u2014 the value in major units",
+        "1250.00 \u2014 store it as a decimal to be safe"
+      ],
+      "correct_index": 1,
+      "explanation": "Minor-unit exponent is per currency, not universally 2. JPY is 0, KWD is 3. Hard-coding 100 is the classic bug \u2014 it makes every yen amount 100\u00d7 too large."
+    }
+  },
+  {
+    "slug": "mr-2",
+    "concept": "money-representation",
+    "kind": "mcq",
+    "prompt": "Why does Ferry refuse floats for money, even float64?",
+    "payload": {
+      "options": [
+        "Floats are slower than integers",
+        "Binary floats cannot represent 0.10 exactly, so sums drift and the ledger stops balancing",
+        "Postgres has no float type",
+        "Floats cannot store negative numbers"
+      ],
+      "correct_index": 1,
+      "explanation": "0.1 has no exact binary representation. Add enough of them and a double-entry ledger fails its own balance check for reasons nobody can find."
+    }
+  },
+  {
+    "slug": "mr-3",
+    "concept": "money-representation",
+    "kind": "short_answer",
+    "prompt": "A junior proposes storing all amounts in EUR minor units and converting at read time. Give the strongest argument against.",
+    "payload": {
+      "reference": "It destroys the original currency, so you can never reproduce what the customer was actually charged, and the conversion rate at read time differs from the rate at transaction time. Amounts must be stored in the currency they occurred in.",
+      "rubric": "Full credit mentions loss of the original transacted currency OR that the rate at read time differs from the rate at transaction time. Half credit for a vague 'rounding errors' answer."
+    }
+  },
+  {
+    "slug": "id-1",
+    "concept": "idempotency",
+    "kind": "mcq",
+    "prompt": "What must an idempotency key be scoped to, for it to actually prevent a double charge?",
+    "payload": {
+      "options": [
+        "The HTTP request body only",
+        "The merchant account only",
+        "The specific payment intent \u2014 the same key must mean the same intended charge",
+        "A timestamp window"
+      ],
+      "correct_index": 2,
+      "explanation": "A key scoped too broadly collapses distinct charges; scoped too narrowly (a fresh key per retry) it prevents nothing. It must identify the intent, and every retry of that intent must carry it."
+    }
+  },
+  {
+    "slug": "id-2",
+    "concept": "idempotency",
+    "kind": "mcq",
+    "prompt": "Ferry's idempotency records expire after 24 hours. A retry arrives 25 hours after the original. What happens, and why does it matter?",
+    "payload": {
+      "options": [
+        "It is rejected as too old \u2014 safe",
+        "It is treated as a brand new charge and the customer is charged twice",
+        "It is deduplicated against the payment table instead \u2014 still safe",
+        "Nothing; keys never expire in practice"
+      ],
+      "correct_index": 1,
+      "explanation": "The TTL is the failure window. Once the record is gone the key is meaningless and the retry looks new. That is why the retry policy's total window must be shorter than the key TTL."
+    }
+  },
+  {
+    "slug": "id-3",
+    "concept": "idempotency",
+    "kind": "short_answer",
+    "prompt": "Why does an idempotency key need a TTL at all? Why not keep them forever?",
+    "payload": {
+      "reference": "Unbounded storage growth, and keys are only useful for the lifetime of a plausible retry. But the TTL must exceed the maximum retry window, or a late retry becomes a second charge.",
+      "rubric": "Full credit names storage growth AND the constraint that TTL must exceed the retry window. Half credit for storage growth alone."
+    }
+  },
+  {
+    "slug": "id-4",
+    "concept": "idempotency",
+    "kind": "self_rated",
+    "prompt": "Explain, without looking, what happens at Ferry when two identical requests with the same idempotency key arrive at the same instant on two different servers.",
+    "payload": {
+      "answer": "A unique constraint on the key makes one insert win; the loser reads the winner's result and returns it. The race is resolved by the database, not by application-level checking, because a check-then-insert has a window between the two."
+    }
+  },
+  {
+    "slug": "de-1",
+    "concept": "double-entry",
+    "kind": "mcq",
+    "prompt": "A \u20ac50 payment succeeds. How many postings does the ledger write?",
+    "payload": {
+      "options": [
+        "One, for \u20ac50",
+        "Two, summing to zero",
+        "Three \u2014 debit, credit and fee",
+        "One per service that observed it"
+      ],
+      "correct_index": 1,
+      "explanation": "Every movement is at least two postings that sum to zero. If a single entry could exist alone, nothing would force the books to balance."
+    }
+  },
+  {
+    "slug": "de-2",
+    "concept": "double-entry",
+    "kind": "mcq",
+    "prompt": "A posting was written with the wrong amount. What does Ferry do?",
+    "payload": {
+      "options": [
+        "UPDATE the posting to the correct amount",
+        "DELETE it and insert a corrected one",
+        "Write a reversing posting, then the correct one \u2014 postings are immutable",
+        "Fix it in the next reconciliation run"
+      ],
+      "correct_index": 2,
+      "explanation": "Postings are immutable and append-only. Correction is a reversal plus a new entry, so the history of what was believed and when survives. Mutating a posting destroys the audit trail a regulator will ask for."
+    }
+  },
+  {
+    "slug": "de-3",
+    "concept": "double-entry",
+    "kind": "short_answer",
+    "prompt": "Ferry stores balances in a `balances` table AND derives them from postings. Which is authoritative, and what must be true?",
+    "payload": {
+      "reference": "Postings are authoritative; the balances table is a derived cache. It must be reproducible by replaying postings, and a job should assert the two agree.",
+      "rubric": "Full credit: postings authoritative AND balances rebuildable/checkable. Half credit for naming postings as the source of truth alone."
+    }
+  },
+  {
+    "slug": "psm-1",
+    "concept": "payment-state-machine",
+    "kind": "mcq",
+    "prompt": "Which transition is illegal at Ferry?",
+    "payload": {
+      "options": [
+        "authorised \u2192 captured",
+        "captured \u2192 refunded",
+        "settled \u2192 authorised",
+        "authorised \u2192 expired"
+      ],
+      "correct_index": 2,
+      "explanation": "Settlement is terminal for the forward path \u2014 money has moved. Going back to authorised would imply un-settling funds that have left the account."
+    }
+  },
+  {
+    "slug": "psm-2",
+    "concept": "payment-state-machine",
+    "kind": "mcq",
+    "prompt": "An authorisation is held but not captured for 8 days. What is the risk?",
+    "payload": {
+      "options": [
+        "None; auths are open-ended",
+        "The auth expires at the issuer (typically ~7 days) and capture fails even though our record says authorised",
+        "The customer is charged twice",
+        "FX is recalculated automatically"
+      ],
+      "correct_index": 1,
+      "explanation": "Issuer auth holds expire. Our state must track expiry, or we present 'authorised' to a merchant for a payment that can no longer be captured."
+    }
+  },
+  {
+    "slug": "psm-3",
+    "concept": "payment-state-machine",
+    "kind": "self_rated",
+    "prompt": "Name the five states in Ferry's payment state machine and one legal transition out of each.",
+    "payload": {
+      "answer": "authorised (\u2192 captured, \u2192 expired), captured (\u2192 settled, \u2192 refunded), settled (\u2192 refunded, \u2192 disputed), refunded (terminal), disputed (\u2192 won/lost). Illegal: anything returning to authorised."
+    }
+  },
+  {
+    "slug": "wd-1",
+    "concept": "webhook-delivery",
+    "kind": "mcq",
+    "prompt": "Ferry guarantees at-least-once webhook delivery. What does a merchant have to build?",
+    "payload": {
+      "options": [
+        "Nothing \u2014 we deduplicate before sending",
+        "Dedupe on our event ID, because they will sometimes receive the same event twice",
+        "An ordering buffer, because we guarantee order",
+        "A polling loop instead"
+      ],
+      "correct_index": 1,
+      "explanation": "At-least-once means duplicates are normal, not exceptional. The receiver dedupes on event ID. We do not promise ordering either."
+    }
+  },
+  {
+    "slug": "wd-2",
+    "concept": "webhook-delivery",
+    "kind": "mcq",
+    "prompt": "On 28 August a merchant received 40,000 duplicate events. What was missing from the retry policy?",
+    "payload": {
+      "options": [
+        "Exponential backoff",
+        "A cap on total attempts and a dead-letter destination",
+        "TLS verification",
+        "A larger thread pool"
+      ],
+      "correct_index": 1,
+      "explanation": "Backoff alone still retries forever. A bounded attempt count plus a dead-letter queue is what stops a failing endpoint becoming a flood."
+    }
+  },
+  {
+    "slug": "wd-3",
+    "concept": "webhook-delivery",
+    "kind": "short_answer",
+    "prompt": "Why can Ferry not promise webhook ordering, even within one payment?",
+    "payload": {
+      "reference": "Deliveries are independent and retried independently, so a retried earlier event can land after a later one. Any node can send, and networks reorder. Ordering would require a per-merchant serialised queue with head-of-line blocking.",
+      "rubric": "Full credit: independent retries mean an earlier event can arrive after a later one. Mention of head-of-line blocking is a bonus, not required."
+    }
+  },
+  {
+    "slug": "fx-1",
+    "concept": "fx-quote-lifecycle",
+    "kind": "mcq",
+    "prompt": "A merchant is shown a quote at checkout valid for 60 seconds. The customer takes 4 minutes. What must happen?",
+    "payload": {
+      "options": [
+        "Honour the original quote \u2014 the customer saw it",
+        "Re-quote; the expired rate is not a price we can fund",
+        "Use the midpoint of old and new",
+        "Convert at settlement instead"
+      ],
+      "correct_index": 1,
+      "explanation": "An expired quote is not hedged. Honouring it means Ferry absorbs the move. Re-quoting is the only safe path, and the UI must say so."
+    }
+  },
+  {
+    "slug": "fx-2",
+    "concept": "fx-quote-lifecycle",
+    "kind": "mcq",
+    "prompt": "Where does Ferry's FX margin live?",
+    "payload": {
+      "options": [
+        "A separate fee posting",
+        "The spread between the sourced rate and the quoted rate",
+        "A percentage added at settlement",
+        "It is waived for small merchants"
+      ],
+      "correct_index": 1,
+      "explanation": "The spread is the margin. It must still be recorded as its own ledger posting so revenue is visible, rather than hidden inside the converted amount."
+    }
+  },
+  {
+    "slug": "fx-3",
+    "concept": "fx-quote-lifecycle",
+    "kind": "self_rated",
+    "prompt": "Who carries the FX risk between authorisation and capture at Ferry, and why is that the right answer?",
+    "payload": {
+      "answer": "Ferry does, for the life of the quote, because the merchant was shown a guaranteed rate. That is exactly why the quote has a short expiry and why capture beyond expiry re-quotes."
+    }
+  },
+  {
+    "slug": "lm-1",
+    "concept": "ledger-migrations",
+    "kind": "mcq",
+    "prompt": "On Tuesday we reverted `add_posting_currency`. Why?",
+    "payload": {
+      "options": [
+        "The column name clashed",
+        "The backfill held a lock on `postings` for 34 seconds in staging",
+        "It failed CI",
+        "The ledger was read-only that day"
+      ],
+      "correct_index": 1,
+      "explanation": "A single-statement backfill over a large table takes a lock for its whole duration. On `postings` that stalls every write path in the company."
+    }
+  },
+  {
+    "slug": "lm-2",
+    "concept": "ledger-migrations",
+    "kind": "mcq",
+    "prompt": "What has to be true before that migration goes back in?",
+    "payload": {
+      "options": [
+        "Chunked batches, run off-peak, after a dry run against a production snapshot",
+        "A bigger database instance",
+        "Running it during the daily deploy",
+        "Adding the column as NOT NULL to fail fast"
+      ],
+      "correct_index": 0,
+      "explanation": "Chunking bounds lock duration; off-peak bounds blast radius; the dry run against a prod-sized snapshot is what tells you the real timing. Staging row counts lie."
+    }
+  },
+  {
+    "slug": "lm-3",
+    "concept": "ledger-migrations",
+    "kind": "short_answer",
+    "prompt": "Why is adding a NOT NULL column with a default dangerous on a large Postgres table, and what is the safe sequence?",
+    "payload": {
+      "reference": "On older Postgres it rewrites the whole table under an exclusive lock. Safe sequence: add the column nullable, backfill in chunks, add a validated CHECK or set NOT NULL once populated.",
+      "rubric": "Full credit: names the table rewrite/exclusive lock AND the nullable-then-backfill-then-constrain sequence. Half credit for either."
+    }
+  },
+  {
+    "slug": "rs-1",
+    "concept": "retry-safety",
+    "kind": "mcq",
+    "prompt": "Hugo proposes retrying failed card payments three times automatically. What is the missing condition?",
+    "payload": {
+      "options": [
+        "Retry only on weekdays",
+        "All attempts must share the original idempotency key, and the customer must be told",
+        "Retry five times instead",
+        "Retry only for amounts under \u20ac100"
+      ],
+      "correct_index": 1,
+      "explanation": "Without a shared key, each retry is a new charge. Without telling the customer, they re-enter a different card and get charged on both paths. This is the exact shape of the duplicate-charge cluster in sprint 42."
+    }
+  },
+  {
+    "slug": "rs-2",
+    "concept": "retry-safety",
+    "kind": "mcq",
+    "prompt": "Which decline reason should NOT be retried?",
+    "payload": {
+      "options": [
+        "Issuer temporarily unavailable",
+        "Network timeout with no response",
+        "Stolen card",
+        "Rate limited by the acquirer"
+      ],
+      "correct_index": 2,
+      "explanation": "Hard declines are a decision, not a failure. Retrying them is at best useless and at worst flagged as testing stolen cards. Only soft/transient failures are retryable."
+    }
+  },
+  {
+    "slug": "rs-3",
+    "concept": "retry-safety",
+    "kind": "short_answer",
+    "prompt": "A timeout with no response is the hardest case. Why, and what does Ferry do?",
+    "payload": {
+      "reference": "We do not know whether the acquirer processed it. Retrying blind risks a double charge; not retrying risks losing a good payment. Ferry retries under the same idempotency key so the acquirer collapses it, and reconciles afterwards if the acquirer does not support keys.",
+      "rubric": "Full credit: names the unknown outcome AND resolution via a shared idempotency key or reconciliation. Half credit for identifying the ambiguity alone."
+    }
+  },
+  {
+    "slug": "pct-1",
+    "concept": "psp-contract-testing",
+    "kind": "mcq",
+    "prompt": "Adyen changed a response field in August and our connector swallowed it for nine days. Why did the contract tests pass?",
+    "payload": {
+      "options": [
+        "They were skipped in CI",
+        "They run against recorded fixtures nobody re-records, so they tested our old assumption",
+        "The change was backwards compatible",
+        "Tests only cover request shape"
+      ],
+      "correct_index": 1,
+      "explanation": "A fixture frozen at the moment you wrote it will agree with you forever. Contract tests need periodic re-recording against the live sandbox, or they only test that you have not changed your mind."
+    }
+  },
+  {
+    "slug": "pct-2",
+    "concept": "psp-contract-testing",
+    "kind": "mcq",
+    "prompt": "What belongs on the adapter's side of the boundary?",
+    "payload": {
+      "options": [
+        "Ferry's payment state machine",
+        "Provider-specific status codes translated into Ferry states",
+        "The ledger posting logic",
+        "Merchant notification rules"
+      ],
+      "correct_index": 1,
+      "explanation": "The adapter's whole job is translation. Once a provider's vocabulary leaks past it, every downstream service learns that provider and the boundary is gone."
+    }
+  },
+  {
+    "slug": "pct-3",
+    "concept": "psp-contract-testing",
+    "kind": "short_answer",
+    "prompt": "Propose a concrete change so a silent provider change is caught in under 24 hours.",
+    "payload": {
+      "reference": "A nightly job re-records fixtures against each provider's sandbox and fails the build on any schema diff, plus an alert on unknown enum values seen in production traffic.",
+      "rubric": "Full credit: scheduled re-recording with a diff/alert. Also accept production canary on unknown fields. Not sufficient: 'write more tests'."
+    }
+  },
+  {
+    "slug": "sca-1",
+    "concept": "sca-exemptions",
+    "kind": "mcq",
+    "prompt": "Under PSD2, which exemption does Ferry rely on most for repeat customers under \u20ac30?",
+    "payload": {
+      "options": [
+        "Corporate payments",
+        "Low-value transaction exemption, subject to cumulative counters",
+        "Merchant-initiated transaction",
+        "Trusted beneficiary"
+      ],
+      "correct_index": 1,
+      "explanation": "The low-value exemption applies below a threshold, but resets on cumulative amount and count since the last authentication. Ignoring the counters is how a merchant's exemption rate quietly becomes non-compliant."
+    }
+  },
+  {
+    "slug": "sca-2",
+    "concept": "sca-exemptions",
+    "kind": "mcq",
+    "prompt": "What changes on 1 October?",
+    "payload": {
+      "options": [
+        "SCA is abolished",
+        "The low-value threshold drops and the transaction-risk-analysis exemption needs stronger evidence",
+        "3DS becomes optional",
+        "Only the UK is affected"
+      ],
+      "correct_index": 1,
+      "explanation": "The consequence is practical: more transactions get challenged, conversion drops, and merchants must be told before it happens rather than after."
+    }
+  },
+  {
+    "slug": "sca-3",
+    "concept": "sca-exemptions",
+    "kind": "short_answer",
+    "prompt": "Who bears the loss on a fraudulent transaction where the merchant claimed an exemption?",
+    "payload": {
+      "reference": "Claiming an exemption moves liability away from the issuer and onto the party that claimed it \u2014 the merchant or Ferry. Authenticating with 3DS shifts liability to the issuer.",
+      "rubric": "Full credit: names liability shift and that claiming an exemption forfeits it. Half credit for identifying 3DS as protective without naming the shift."
+    }
+  },
+  {
+    "slug": "rc-1",
+    "concept": "reconciliation",
+    "kind": "mcq",
+    "prompt": "The bank's settlement file shows \u20ac12,431.02; our ledger says \u20ac12,431.44. What is the correct first move?",
+    "payload": {
+      "options": [
+        "Adjust the ledger to match the bank",
+        "Book the difference as a rounding expense",
+        "Identify the individual transactions that differ before touching anything",
+        "Wait for the next file to see if it self-corrects"
+      ],
+      "correct_index": 2,
+      "explanation": "A break is a question, not a number. Aggregate adjustment destroys the evidence of which payment was wrong, and 42 cents is a symptom, not a cause."
+    }
+  },
+  {
+    "slug": "rc-2",
+    "concept": "reconciliation",
+    "kind": "mcq",
+    "prompt": "Which break type is most likely to be genuinely benign?",
+    "payload": {
+      "options": [
+        "A payment in our ledger absent from the bank file",
+        "Timing \u2014 settled after the file's cutoff, appearing in the next file",
+        "An amount mismatch on a single payment",
+        "A duplicate in the bank file"
+      ],
+      "correct_index": 1,
+      "explanation": "Timing breaks resolve themselves on the next file. Every other class needs explanation. Classifying breaks by type is what makes the queue tractable."
+    }
+  },
+  {
+    "slug": "rc-3",
+    "concept": "reconciliation",
+    "kind": "self_rated",
+    "prompt": "Describe Ferry's reconciliation loop end to end, and name the point at which a human must be involved.",
+    "payload": {
+      "answer": "Ingest the bank file, match on the acquirer reference, classify unmatched rows as timing / amount / missing / duplicate, auto-resolve timing on the next file, and escalate everything else. A human decides on amount mismatches and duplicates, because both imply someone was charged wrongly."
+    }
+  },
+  {
+    "slug": "ps-1",
+    "concept": "payout-settlement",
+    "kind": "mcq",
+    "prompt": "A merchant expects \u20ac5,000 on Thursday and receives \u20ac4,850. What is the most likely cause?",
+    "payload": {
+      "options": [
+        "FX moved after settlement",
+        "A refund and its fee were netted into the same payout",
+        "The bank lost it",
+        "Our ledger is wrong"
+      ],
+      "correct_index": 1,
+      "explanation": "Payouts are net of refunds, chargebacks and fees in the same window. The statement has to show the netting, or every payout generates a support ticket."
+    }
+  },
+  {
+    "slug": "ps-2",
+    "concept": "payout-settlement",
+    "kind": "mcq",
+    "prompt": "Why is Ferry's payout cutoff earlier than the bank's?",
+    "payload": {
+      "options": [
+        "To batch per currency and leave room to fix a failed batch before the bank's deadline",
+        "Regulatory requirement",
+        "To reduce FX cost",
+        "Historical accident"
+      ],
+      "correct_index": 0,
+      "explanation": "The gap is deliberate operational slack. A batch that fails at the bank's cutoff cannot be re-run; one that fails at ours can."
+    }
+  },
+  {
+    "slug": "ps-3",
+    "concept": "payout-settlement",
+    "kind": "short_answer",
+    "prompt": "A payout batch partially fails: 40 of 60 merchants are paid. What must the system guarantee?",
+    "payload": {
+      "reference": "That the 40 are not paid again on retry, and the 20 are. This requires per-merchant payout idempotency, not batch-level \u2014 the batch is not the unit of atomicity.",
+      "rubric": "Full credit: per-merchant idempotency rather than batch-level retry. Half credit for identifying the double-payment risk alone."
+    }
+  },
+  {
+    "slug": "cf-1",
+    "concept": "challenge-flow-ux",
+    "kind": "mcq",
+    "prompt": "Marketing asks to remove the 3DS challenge step for repeat customers because it costs conversions. Which part of that request is Ferry's to decide?",
+    "payload": {
+      "options": [
+        "None of it \u2014 SCA is mandatory on every transaction, with no exceptions",
+        "All of it \u2014 3DS is a Ferry product choice we can turn off per merchant",
+        "Whether to *claim* an exemption we qualify for; the challenge itself is mandated when no exemption applies",
+        "Only the visual design of the challenge screen; everything else is fixed by the card scheme"
+      ],
+      "correct_index": 2,
+      "explanation": "PSD2 mandates SCA unless a listed exemption applies. Claiming a low-value or TRA exemption is Ferry's decision (and Ferry carries the liability); skipping the challenge when no exemption applies is not. Knowing which half is negotiable is the whole skill \u2014 see PAY-1870."
+    }
+  },
+  {
+    "slug": "cf-2",
+    "concept": "challenge-flow-ux",
+    "kind": "short_answer",
+    "prompt": "A designer proposes showing the 3DS challenge in a modal that the customer can dismiss with an X. Give the strongest objection.",
+    "payload": {
+      "reference": "A dismissed challenge leaves the payment in a state the flow has no exit from: the authorisation is neither completed nor failed, so the customer sees nothing while the state machine holds. If the challenge is dismissible it must map to an explicit abandon transition that releases the authorisation.",
+      "rubric": "Full credit names a state the payment is left in with no legal transition out, OR that abandonment must be an explicit modelled outcome. Half credit for 'the payment might fail' without reference to state."
+    }
+  },
+  {
+    "slug": "cf-3",
+    "concept": "challenge-flow-ux",
+    "kind": "self_rated",
+    "prompt": "Without looking: on the Ferry checkout, name one thing the regulator requires, one the card scheme requires, and one that is purely our choice.",
+    "payload": {
+      "answer": "Regulator (PSD2): strong customer authentication with two independent factors, unless an exemption is claimed and evidenced. Card scheme: the 3DS protocol and its message flow, including the issuer-hosted challenge. Ferry's choice: whether to attempt an exemption, the copy and layout around the challenge, and whether we pre-warn the customer that a challenge is coming."
+    }
+  },
+  {
+    "slug": "psc-1",
+    "concept": "payment-status-communication",
+    "kind": "mcq",
+    "prompt": "The orchestrator is on retry attempt 2 of 4 after a soft decline. What should the customer see? (PAY-1852)",
+    "payload": {
+      "options": [
+        "\"Payment failed\" \u2014 it declined, so say so",
+        "Nothing until the final attempt resolves; a spinner is enough",
+        "\"Still trying\" with the fact that no money has left their account and what happens next",
+        "\"Payment successful\" optimistically, and correct it later if all attempts fail"
+      ],
+      "correct_index": 2,
+      "explanation": "\"Failed\" is a claim we cannot make while attempts remain \u2014 and it drives the customer to pay again on another card, which is how a duplicate charge becomes a duplicate *order*. A silent spinner is the other failure: PAY-1826 held an authorisation for 8 days with the customer told nothing."
+    }
+  },
+  {
+    "slug": "psc-2",
+    "concept": "payment-status-communication",
+    "kind": "short_answer",
+    "prompt": "Why is a merchant's payment status screen allowed to be wrong for a few seconds, and what must the design do about it?",
+    "payload": {
+      "reference": "The merchant's view is driven by webhook delivery, which is at-least-once with no ordering guarantee, so a late or out-of-order event can render a stale status. The design must show the status as of a timestamp rather than as a fact, and must never present a status change as final unless it is a terminal state.",
+      "rubric": "Full credit names at-least-once/unordered delivery as the cause AND some form of 'as of' or non-final presentation as the response. Half credit for either half alone."
+    }
+  },
+  {
+    "slug": "psc-3",
+    "concept": "payment-status-communication",
+    "kind": "mcq",
+    "prompt": "A payout lands short because one batch entry failed. What does the merchant statement need to show? (PAY-1869)",
+    "payload": {
+      "options": [
+        "The net figure only \u2014 detail confuses merchants",
+        "The net figure, plus the gross and the specific deduction that produced it",
+        "A support contact and nothing else, since the cause is internal",
+        "The original expected amount, with the shortfall corrected in the next payout"
+      ],
+      "correct_index": 1,
+      "explanation": "A number the merchant cannot reconcile against their own records is indistinguishable from a bug, and generates the support load reconciliation exists to prevent. Netting must be shown, not just applied."
+    }
+  },
+  {
+    "slug": "sca-4",
+    "concept": "sca-exemptions",
+    "kind": "mcq",
+    "prompt": "From 1 October the low-value exemption threshold drops. A \u20ac40 transaction that was previously exempt now is not. What must change in the flow? (PAY-1870)",
+    "payload": {
+      "options": [
+        "Nothing \u2014 exemptions are claimed by the issuer, not by us",
+        "The transaction must be sent for a challenge unless a different exemption applies and we can evidence it",
+        "The amount should be split into two \u20ac20 authorisations to stay under the threshold",
+        "We keep claiming the exemption and absorb any chargebacks"
+      ],
+      "correct_index": 1,
+      "explanation": "Ferry decides which exemption to claim and carries the liability for claiming one it cannot evidence. Splitting a transaction to duck the threshold is exactly the structuring the rule exists to prevent."
+    }
+  },
+  {
+    "slug": "sca-5",
+    "concept": "sca-exemptions",
+    "kind": "short_answer",
+    "prompt": "What evidence does the transaction-risk-analysis exemption require, and why can it not be produced retrospectively?",
+    "payload": {
+      "reference": "TRA requires a recorded real-time risk score for that transaction, computed before authorisation, together with the fraud rate for the relevant band that qualified us to use the exemption at all. It cannot be produced afterwards because the claim is that the assessment informed the decision \u2014 a score computed later evidences nothing about what we knew when we skipped the challenge.",
+      "rubric": "Full credit names a per-transaction risk assessment recorded at authorisation time AND that a retrospective score cannot evidence the decision. Half credit for naming the fraud-rate threshold alone."
+    }
+  },
+  {
+    "slug": "sca-6",
+    "concept": "sca-exemptions",
+    "kind": "self_rated",
+    "prompt": "Without looking: name the exemptions Ferry actually claims today, and for each one, who carries the liability if it is challenged.",
+    "payload": {
+      "answer": "Low-value (under threshold, with a count-and-cumulative-amount limit per card) and transaction risk analysis. In both cases Ferry claims the exemption, so Ferry carries the fraud liability \u2014 the shift to the issuer that comes with a completed challenge does not apply. That is the trade being made: conversion now against liability later."
+    }
+  }
+]

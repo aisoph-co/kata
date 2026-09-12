@@ -17,11 +17,25 @@ request by the caller (e.g. a FastAPI dependency with `request.state`).
 
 from __future__ import annotations
 
+import json
+import os
+import sys
+from pathlib import Path
+
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from learning_service.identity.models import Identity, Person
 from learning_service.roster.schemas import ROLES, RosterImportPerson
+
+# `plugins/hermes-kata` sits next to `learning_service` in this same
+# monorepo checkout (KATA-4, carried from KATA-11's human gate) — not a
+# declared dependency of this package (its own `pyproject.toml` has none on
+# `hermes-kata`, and never will: the two ship as separate deployables, see
+# `hermes_kata.commands._real_create_job_fn`'s own "only works inside a real
+# Hermes install" note). Reached by path, best-effort, only for the one pure
+# function below that needs no live Hermes.
+_HERMES_KATA_PLUGIN_SRC = Path(__file__).resolve().parents[2] / "plugins" / "hermes-kata"
 
 
 class UnknownManager(Exception):
@@ -134,6 +148,67 @@ async def import_roster(
     await session.commit()
     ordered = [by_email[entry.email] for entry in persons]
     return ordered, created, updated
+
+
+def write_kata_roster_json(persons: list[Person], request_persons: list[RosterImportPerson]) -> str | None:
+    """After every successful `POST /admin/roster/import`, refresh the file
+    `KATA_ROSTER_JSON` points at with this roster's `{id, slack_user_id}`
+    pairs — the shape `hermes_kata.commands.load_roster` reads (its own
+    docstring: "the same `{id, slack_user_id}` shape a caller builds by
+    matching `POST /admin/roster/import`'s request persons against its
+    response persons by email"). Vendored `hermes_kata/roster.json` stays
+    empty on purpose (it must never fabricate a recipient) — this is the
+    roster source `KATA_ROSTER_JSON` exists to point at instead (G1's
+    human-gate carry-over, KATA-11 -> KATA-4). `None`, not an empty file,
+    when the variable isn't set — this process never guesses a path.
+    """
+    target = os.environ.get("KATA_ROSTER_JSON")
+    if not target:
+        return None
+    by_email = {p.email: p for p in persons}
+    payload = {
+        "persons": [
+            {"id": by_email[entry.email].id, "slack_user_id": entry.slack_user_id}
+            for entry in request_persons
+            if entry.slack_user_id and entry.email in by_email
+        ]
+    }
+    path = Path(target)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(path)
+
+
+def plan_digest_jobs_count(persons: list[Person], request_persons: list[RosterImportPerson]) -> int | None:
+    """Best-effort `sync_digest_jobs` count for the import response:
+    `hermes_kata.digests.plan_digest_jobs` is pure (no live Hermes/
+    `cron.jobs` needed, unlike `create_digest_jobs`/`sync_digest_jobs`
+    itself), so it can run inside this process and report a real number —
+    proof G1's twelve-job done check (ten due-rep, one team-quiz, one
+    teach-back) will hold once a live Hermes turn actually calls
+    `sync_digest_jobs`, without this process pretending to be Hermes or
+    creating a single cron job itself.
+
+    `None`, never a fabricated number, when the plugin isn't reachable
+    (an image that doesn't vendor `plugins/`) or `KATA_TEAM_CHANNEL` isn't
+    configured — the team-quiz/teach-back jobs need a channel to deliver to.
+    """
+    team_channel = os.environ.get("KATA_TEAM_CHANNEL")
+    if not team_channel:
+        return None
+    try:
+        if _HERMES_KATA_PLUGIN_SRC.is_dir() and str(_HERMES_KATA_PLUGIN_SRC) not in sys.path:
+            sys.path.insert(0, str(_HERMES_KATA_PLUGIN_SRC))
+        from hermes_kata.digests import plan_digest_jobs
+    except ImportError:
+        return None
+    by_email = {p.email: p for p in persons}
+    roster_persons = [
+        {"id": by_email[entry.email].id, "slack_user_id": entry.slack_user_id}
+        for entry in request_persons
+        if entry.email in by_email
+    ]
+    return len(plan_digest_jobs(roster_persons, team_channel=team_channel))
 
 
 _SUBTREE_CTE = text(
