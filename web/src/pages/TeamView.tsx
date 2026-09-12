@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useConceptTitles } from '@/hooks/useConceptTitles'
 import { useTeamAudit } from '@/hooks/useTeamAudit'
 import { useTeamHeatmapMatrix } from '@/hooks/useTeamHeatmapMatrix'
@@ -38,8 +38,24 @@ export function TeamView() {
 
   function openPerson(personId: string) {
     setSelectedPersonId(personId)
-    setAuditRefreshKey((key) => key + 1)
   }
+
+  // The audit row for this drill-down is written by the server as part of
+  // handling `GET /team/people/{id}` itself — bumping the refresh key at
+  // the same time `openPerson` fires would race `useTeamAudit`'s read
+  // against that write (both effects fire off the same click; nothing
+  // orders one before the other). Keying off `detail.data` instead only
+  // fires once `/team/people/{id}` has actually resolved, so the new row
+  // is guaranteed to exist by the time `/team/audit` is re-read. Never
+  // fires on a failed detail fetch (`detail.data` stays null), since a
+  // request that never reached the person shouldn't be assumed to have
+  // written a row.
+  useEffect(() => {
+    if (selectedPersonId && detail.data && detail.data.person_id === selectedPersonId) {
+      setAuditRefreshKey((key) => key + 1)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail.data])
 
   if (!session) return null
 

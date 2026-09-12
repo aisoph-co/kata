@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearWebSession, setWebSession } from '@/lib/session-store'
 import { TeamView } from './TeamView'
@@ -128,7 +128,7 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-gone-quiet-callout')).toHaveTextContent('10%')
   })
 
-  it('opens a drill-down on row click, fetches only that person, and refreshes the audit line', async () => {
+  it('opens a drill-down on row click and fetches only that person', async () => {
     render(<TeamView />)
 
     await screen.findByTestId('team-heatmap')
@@ -143,14 +143,62 @@ describe('TeamView', () => {
     const detailCall = fetchMock.mock.calls.slice(callsBeforeClick).find(([url]) => String(url).includes('/team/people/'))
     expect(detailCall?.[0]).toBe('/api/team/people/p-hugo')
 
-    // Opening the panel is one more /team/audit read than the initial load.
-    const auditCallsAfter = fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/team/audit')).length
-    expect(auditCallsAfter).toBeGreaterThanOrEqual(2)
-
     // The response this panel renders (`personDetail`, above) carries only
     // `ProgressEntry`/summary fields — no `answer`/item/transcript field
     // exists to leak; the panel's own privacy note says so explicitly.
     expect(screen.getByTestId('team-drilldown-privacy-note')).toHaveTextContent(/transcript/i)
+  })
+
+  it('re-reads the audit log only after /team/people/{id} has resolved, never before', async () => {
+    // A mock that always returns the new row regardless of call order can't
+    // tell "refreshed before the write" apart from "refreshed after it" —
+    // this one mirrors the server's own ordering: the row exists only once
+    // the person-detail request has actually been handled.
+    let resolveDetail!: () => void
+    const detailGate = new Promise<void>((resolve) => {
+      resolveDetail = resolve
+    })
+    let personDetailHandled = false
+    const auditRow = {
+      id: 'a1',
+      actor_person_id: 'p-quinn',
+      subject_scope: 'p-hugo',
+      endpoint: '/team/people/p-hugo',
+      at: '2026-09-12T00:00:00Z',
+    }
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url.includes('/team/people/')) {
+          return detailGate.then(() => {
+            personDetailHandled = true
+            return jsonResponse(200, personDetail(url.split('/').pop()!))
+          })
+        }
+        if (url.endsWith('/team/audit')) {
+          return Promise.resolve(jsonResponse(200, { entries: personDetailHandled ? [auditRow] : [] }))
+        }
+        return Promise.resolve(routeFetch(url))
+      }),
+    )
+
+    render(<TeamView />)
+    await screen.findByTestId('team-heatmap')
+    expect(screen.getByTestId('team-audit-line')).toHaveTextContent('No reads recorded yet.')
+
+    fireEvent.click(screen.getByTestId('team-row-p-hugo'))
+    await screen.findByTestId('team-drilldown-loading')
+
+    // The person-detail request is still in flight — re-reading the audit
+    // log now would race the row it's about to write, so it must not have
+    // happened yet.
+    expect(screen.getByTestId('team-audit-line')).toHaveTextContent('No reads recorded yet.')
+
+    resolveDetail()
+    await screen.findByTestId('team-drilldown-concepts')
+
+    await waitFor(() => expect(screen.getByTestId('team-audit-line')).toHaveTextContent('/team/people/p-hugo'))
   })
 
   it('shows the same forbidden treatment on a 403, never a bespoke error page', async () => {
