@@ -96,6 +96,18 @@ class JobIdentityRegistry:
             return self._data.get(job_name)
 
 
+def _parse_platform_external_id(value: str) -> Optional[tuple[str, str]]:
+    """`"<platform>:<external_id>"` -> `(platform, external_id)`, or `None`
+    if it doesn't parse to two non-empty halves. The one string shape every
+    env-driven identity override in this module accepts, factored out so
+    `job_identities_from_env` and `default_acting_identity_from_env` agree
+    on it exactly."""
+    platform, sep, external_id = value.partition(":")
+    if sep and platform and external_id:
+        return platform, external_id
+    return None
+
+
 def job_identities_from_env(raw: Optional[str]) -> dict[str, ActingIdentity]:
     """Parse `KATA_JOB_IDENTITIES` (deploy config) into `job_name ->
     ActingIdentity` bindings — durable metadata for a cron job this plugin
@@ -112,7 +124,14 @@ def job_identities_from_env(raw: Optional[str]) -> dict[str, ActingIdentity]:
     value that isn't valid JSON, isn't an object, or has an entry that
     doesn't parse to a non-empty platform/external_id is skipped — one bad
     or malformed entry must never keep every other binding (or plugin
-    registration itself) from loading."""
+    registration itself) from loading.
+
+    Keyed by job *name* — since fix round 4, this only ever matches
+    `job_identities.get(job_name)` in `make_identity_resolver`, which is
+    always `None` in production (`cron_job_id_from_session_id`'s docstring);
+    an override that needs to actually take effect on a live job has to be
+    keyed by that job's *id* instead (the same map works for either — the
+    registry doesn't care which shape of string named the entry)."""
     if not raw or not raw.strip():
         return {}
     try:
@@ -125,10 +144,54 @@ def job_identities_from_env(raw: Optional[str]) -> dict[str, ActingIdentity]:
     for name, value in parsed.items():
         if not isinstance(name, str) or not isinstance(value, str):
             continue
-        platform, sep, external_id = value.partition(":")
-        if sep and platform and external_id:
-            identities[name] = ActingIdentity(platform=platform, external_id=external_id)
+        pair = _parse_platform_external_id(value)
+        if pair is not None:
+            identities[name] = ActingIdentity(platform=pair[0], external_id=pair[1])
     return identities
+
+
+def default_acting_identity_from_env(raw: Optional[str]) -> Optional[ActingIdentity]:
+    """Parse `KATA_DEFAULT_ACTING_IDENTITY` (deploy config, KATA-24 fix
+    round 5): the identity a *group* cron job's tool calls act as, for when
+    that job's own `deliver` names the channel it posts into rather than a
+    person — `_is_slack_group_recipient`, `make_identity_resolver`, below.
+
+    A due-rep/DM digest job's `deliver` is the recipient's own id, which
+    already doubles correctly as their acting identity (fix round 4) — nothing
+    here changes that path. A team-quiz/teach-back/demo-quiz job's `deliver`
+    is a Slack channel (`kata-demo-quiz-B-C0C10B1KHHP` -> `slack:
+    C0C10B1KHHP`), and no channel is ever a person the learning service can
+    act on behalf of — every such job hit `unknown_identity: no person
+    matches this identity` once fix round 4 correctly started resolving
+    *a* identity for it, just the channel's, not a person's. This names a
+    real, already-seeded learning-service person (e.g. `slack:U0C03BWUVEE`,
+    Ferry's Quinn Halloran, the tech lead/operator) to act as for every such
+    job instead, without needing a per-job override.
+
+    `raw` is a single `"platform:external_id"` string, the same shape one
+    `KATA_JOB_IDENTITIES` value uses. Unset/blank/malformed is `None` — a
+    no-op, same convention as every other env-driven default in this
+    plugin; never raises on a bad value."""
+    if not raw or not raw.strip():
+        return None
+    pair = _parse_platform_external_id(raw.strip())
+    if pair is None:
+        return None
+    return ActingIdentity(platform=pair[0], external_id=pair[1])
+
+
+# Slack's own conversation-id convention: `C…` public channel, `G…`
+# private channel/group — a delivery target, never itself a person. `U…`/
+# `D…` (user / DM channel) are individual, and correctly resolve as the
+# recipient's own identity (fix round 4) — this is what tells a group cron
+# job's `deliver` apart from a DM one's (KATA-24 fix round 5).
+_SLACK_GROUP_ID_PREFIXES = ("C", "G")
+
+
+def _is_slack_group_recipient(recipient: Mapping[str, str]) -> bool:
+    return recipient.get("platform") == "slack" and recipient.get("external_id", "").startswith(
+        _SLACK_GROUP_ID_PREFIXES
+    )
 
 
 
@@ -170,6 +233,7 @@ def make_identity_resolver(
     store_handle: SessionStoreHandle,
     *,
     job_deliver_lookup: Optional[Callable[[str], Optional[Mapping[str, str]]]] = None,
+    default_acting_identity: Optional[ActingIdentity] = None,
 ) -> Callable[..., ActingIdentity]:
     """Resolution order for a tool call (spec §1/§2): `session_id` ->
     `lookup_by_session_id` -> session key -> plugin cache ->
@@ -186,6 +250,16 @@ def make_identity_resolver(
     cache/metadata entry. A resolved `job_deliver_lookup` hit is cached
     into `job_identities` (keyed by job id) so only the first tool call on
     a given job pays for the lookup.
+
+    KATA-24 fix round 5: when the `job_deliver_lookup` hit names a Slack
+    channel/group rather than a person (`_is_slack_group_recipient`) —
+    every team-quiz/teach-back/demo-quiz job, whose `deliver` is where it
+    posts, not who it acts as — `default_acting_identity` is used instead,
+    if configured (`KATA_DEFAULT_ACTING_IDENTITY`). A DM/due-rep job's
+    `deliver` is the recipient's own id, never channel-shaped, so it's
+    unaffected and keeps resolving exactly as fix round 4 left it. With no
+    `default_acting_identity` configured, behavior is unchanged from round
+    4 (the channel's own "identity" is used, same as before this round).
     """
 
     def resolve(*, session_id: Optional[str] = None, job_name: Optional[str] = None, **_: Any) -> ActingIdentity:
@@ -213,7 +287,10 @@ def make_identity_resolver(
                     continue
                 recipient = job_deliver_lookup(key)
                 if recipient is not None:
-                    identity = ActingIdentity(platform=recipient["platform"], external_id=recipient["external_id"])
+                    if default_acting_identity is not None and _is_slack_group_recipient(recipient):
+                        identity = default_acting_identity
+                    else:
+                        identity = ActingIdentity(platform=recipient["platform"], external_id=recipient["external_id"])
                     job_identities.set(key, identity)
                     return identity
         raise LookupError(

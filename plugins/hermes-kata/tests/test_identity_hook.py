@@ -25,6 +25,7 @@ from hermes_kata.tools import (
     JobIdentityRegistry,
     cron_job_deliver_lookup,
     cron_job_id_from_session_id,
+    default_acting_identity_from_env,
     job_identities_from_env,
     make_identity_resolver,
 )
@@ -359,3 +360,107 @@ def test_resolver_still_raises_when_neither_job_name_nor_session_id_resolve():
 
     with pytest.raises(LookupError):
         resolver(session_id="cron_deadbeef0000_20260912_083307", job_name=None)
+
+
+# --- KATA-24 fix round 5: a group/channel cron job's `deliver` is where it --
+# --- posts, not who it acts as — resolving it directly as an identity     --
+# --- (fix round 4) hits `unknown_identity` at the learning service, since  --
+# --- no Slack channel is ever a seeded person. `default_acting_identity`  --
+# --- (from `KATA_DEFAULT_ACTING_IDENTITY`) names a real one instead.      --
+
+
+def test_default_acting_identity_from_env_parses_a_seeded_person():
+    # Ferry's Quinn Halloran, the tech lead/operator (learning_service/
+    # fixtures/ferry/roster.json).
+    assert default_acting_identity_from_env("slack:U0C03BWUVEE") == ActingIdentity(
+        platform="slack", external_id="U0C03BWUVEE"
+    )
+
+
+def test_default_acting_identity_from_env_is_a_no_op_when_unset_blank_or_malformed():
+    assert default_acting_identity_from_env(None) is None
+    assert default_acting_identity_from_env("") is None
+    assert default_acting_identity_from_env("   ") is None
+    assert default_acting_identity_from_env("no-colon-here") is None
+
+
+def test_is_slack_group_recipient_true_for_channel_and_group_ids():
+    from hermes_kata.tools import _is_slack_group_recipient
+
+    assert _is_slack_group_recipient({"platform": "slack", "external_id": "C0C10B1KHHP"}) is True
+    assert _is_slack_group_recipient({"platform": "slack", "external_id": "GABCDEF123"}) is True
+
+
+def test_is_slack_group_recipient_false_for_a_user_or_dm_id_or_another_platform():
+    from hermes_kata.tools import _is_slack_group_recipient
+
+    assert _is_slack_group_recipient({"platform": "slack", "external_id": "U0C03BWUVEE"}) is False
+    assert _is_slack_group_recipient({"platform": "slack", "external_id": "D0123456789"}) is False
+    assert _is_slack_group_recipient({"platform": "whatsapp", "external_id": "C0C10B1KHHP"}) is False
+
+
+def test_resolver_uses_the_default_identity_for_a_group_jobs_channel_deliver():
+    # The exact live-reported KATA-24 shape: kata-demo-quiz-B-C0C10B1KHHP's
+    # own `deliver` is the channel it posts into.
+    fake_jobs = {"0e771dbadf60": {"deliver": "slack:C0C10B1KHHP"}}
+    resolver = make_identity_resolver(
+        SessionIdentityCache(),
+        JobIdentityRegistry(),
+        SessionStoreHandle(),
+        job_deliver_lookup=cron_job_deliver_lookup(get_job=fake_jobs.get),
+        default_acting_identity=ActingIdentity(platform="slack", external_id="U0C03BWUVEE"),
+    )
+
+    identity = resolver(session_id="cron_0e771dbadf60_20260912_083307", job_name=None)
+
+    assert identity == ActingIdentity(platform="slack", external_id="U0C03BWUVEE")
+
+
+def test_resolver_caches_the_default_identity_under_the_jobs_own_key():
+    fake_jobs = {"0e771dbadf60": {"deliver": "slack:C0C10B1KHHP"}}
+    registry = JobIdentityRegistry()
+    resolver = make_identity_resolver(
+        SessionIdentityCache(),
+        registry,
+        SessionStoreHandle(),
+        job_deliver_lookup=cron_job_deliver_lookup(get_job=fake_jobs.get),
+        default_acting_identity=ActingIdentity(platform="slack", external_id="U0C03BWUVEE"),
+    )
+
+    resolver(session_id="cron_0e771dbadf60_20260912_083307", job_name=None)
+
+    assert registry.get("0e771dbadf60") == ActingIdentity(platform="slack", external_id="U0C03BWUVEE")
+
+
+def test_resolver_leaves_a_dm_jobs_deliver_identity_untouched_by_the_default():
+    # A due-rep/DM job's `deliver` is the recipient's own id (a user, never
+    # channel-shaped) — the default must never override a correctly
+    # resolving individual identity.
+    fake_jobs = {"c8b27bbaf683": {"deliver": "slack:U0FERRY06"}}
+    resolver = make_identity_resolver(
+        SessionIdentityCache(),
+        JobIdentityRegistry(),
+        SessionStoreHandle(),
+        job_deliver_lookup=cron_job_deliver_lookup(get_job=fake_jobs.get),
+        default_acting_identity=ActingIdentity(platform="slack", external_id="U0C03BWUVEE"),
+    )
+
+    identity = resolver(session_id="cron_c8b27bbaf683_20260912_083307", job_name=None)
+
+    assert identity == ActingIdentity(platform="slack", external_id="U0FERRY06")
+
+
+def test_resolver_keeps_round_4_behavior_when_no_default_identity_is_configured():
+    # No `KATA_DEFAULT_ACTING_IDENTITY` set — a group job's channel is still
+    # used directly, exactly as fix round 4 left it (no regression).
+    fake_jobs = {"0e771dbadf60": {"deliver": "slack:C0C10B1KHHP"}}
+    resolver = make_identity_resolver(
+        SessionIdentityCache(),
+        JobIdentityRegistry(),
+        SessionStoreHandle(),
+        job_deliver_lookup=cron_job_deliver_lookup(get_job=fake_jobs.get),
+    )
+
+    identity = resolver(session_id="cron_0e771dbadf60_20260912_083307", job_name=None)
+
+    assert identity == ActingIdentity(platform="slack", external_id="C0C10B1KHHP")
