@@ -8,6 +8,12 @@ set -euo pipefail
 
 PLATFORMS=(slack telegram discord whatsapp_cloud signal)
 
+# W10: the CopilotKit popup's runtime talks to Hermes as the `api_server`
+# platform (`gateway/platforms/api_server.py`). Same lockdown as every
+# learner-facing messaging platform — never "web" here either; Plus-tier
+# content-freshness checks weren't asked for on this surface.
+API_SERVER_PLATFORM=api_server
+
 # Instance-level guardrails. One Hermes instance, one purpose (Kata) — no
 # other tenant to carve a per-platform exception for.
 hermes config set memory.memory_enabled false
@@ -28,3 +34,4 @@ hermes config set sessions.retention_days 14
 for platform in "${PLATFORMS[@]}"; do
   hermes config set "platform_toolsets.${platform}" '["learning", "clarify"]'
 done
+hermes config set "platform_toolsets.${API_SERVER_PLATFORM}" '["learning", "clarify"]'

@@ -4,6 +4,15 @@
 
 :root {
   color-scheme: dark;
+
+  /* W10: theme the CopilotKit popup as far as the tokens already vendored
+   * above (build-day/design/DESIGN-SYSTEM.md) reach — the app has no full
+   * component-library install to pull real token names from, so these are
+   * the same raw hex values the rest of this file already uses. */
+  --copilot-kit-primary-color: #22d3ee; /* cyan-400 */
+  --copilot-kit-contrast-color: #020617; /* slate-950 */
+  --copilot-kit-background-color: #0f172a; /* slate-900 */
+  --copilot-kit-input-background-color: #0f172a; /* slate-900 */
 }
 
 body {

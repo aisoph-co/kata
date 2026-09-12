@@ -1,5 +1,6 @@
 import { AppShell } from '@/components/AppShell'
 import { Auth0ProviderWithNavigate } from '@/components/Auth0ProviderWithNavigate'
+import { KataCopilotPopup } from '@/components/KataCopilotPopup'
 import { SessionGate } from '@/components/SessionGate'
 import { useRoute } from '@/lib/router'
 import { Dashboard } from '@/pages/Dashboard'
@@ -23,6 +24,11 @@ function App() {
       <SessionGate>
         <Screens />
       </SessionGate>
+      {/* W10: reads the same module-level session store SessionGate
+          populates, independent of which screen SessionGate is currently
+          rendering — so it mounts once here, at the router root, rather
+          than being threaded into every future screen (W2-W4). */}
+      <KataCopilotPopup />
     </Auth0ProviderWithNavigate>
   )
 }

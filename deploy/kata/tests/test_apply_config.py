@@ -59,3 +59,10 @@ def test_instance_level_guardrails_are_set(config_after_apply):
     assert config_after_apply["memory"]["user_profile_enabled"] is False
     assert config_after_apply["security"]["redact_secrets"] is True
     assert config_after_apply["terminal"]["backend"] == "modal"
+
+
+def test_api_server_platform_is_exactly_learning_and_clarify(config_after_apply):
+    """W10 done check: the CopilotKit popup's runtime talks to Hermes as the
+    `api_server` platform — locked down exactly like every other
+    learner-facing platform, never "web" (that stays Slack-only, KATA-15)."""
+    assert config_after_apply["platform_toolsets"]["api_server"] == ["learning", "clarify"]
