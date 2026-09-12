@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Vendored placeholder quiz items for the team-quiz demo round (issue G1) — the ledger-migrations round drawn from the reverted PAY-1863 migration. Stands in until Stage 2's content ingestion lands a real, curated item catalog; KATA_QUIZ_ITEMS_JSON overrides this path with no code change, same convention hermes_kata/tools.json uses for KATA_TOOLS_JSON.",
+  "items": [
+    {
+      "item_id": "lm-1",
+      "concept": "ledger-migrations",
+      "source_ref": "PAY-1863",
+      "prompt": "PAY-1863's backfill ran without first taking a row lock on the ledger table. Which lock should it have taken before writing?",
+      "options": ["No lock needed", "A read lock", "A row-level write lock", "A full table lock held for the whole migration"],
+      "correct_index": 2
+    },
+    {
+      "item_id": "lm-2",
+      "concept": "ledger-migrations",
+      "source_ref": "PAY-1863",
+      "prompt": "Before PAY-1863's backfill runs against production, what should happen first?",
+      "options": ["Run it directly against production", "A dry run against a snapshot, diffed against expected output", "Skip straight to a canary of 1% of rows", "Nothing — the migration is idempotent"],
+      "correct_index": 1
+    }
+  ]
+}

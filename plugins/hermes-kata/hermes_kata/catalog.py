@@ -15,7 +15,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 from .forwarder import make_forwarder
 
@@ -51,21 +51,38 @@ def load_tool_catalog(path: Path | None = None) -> list[ToolSpec]:
     ]
 
 
-def register_tools(ctx, client, catalog: list[ToolSpec] | None = None) -> list[str]:
+def register_tools(
+    ctx,
+    client,
+    catalog: list[ToolSpec] | None = None,
+    *,
+    is_quiz_item: Optional[Callable[[Any], bool]] = None,
+    on_review: Optional[Callable[..., None]] = None,
+) -> list[str]:
     """Register one Hermes tool per catalog entry via `ctx.register_tool`.
 
     Returns the registered tool names, so the contract test can assert the
     generated set equals the catalog exactly — the catalog is the whole
     surface, not a floor.
+
+    `is_quiz_item` and `on_review` (issue G1) are only ever wired onto
+    `submit_review` — every other tool is registered exactly as before.
     """
     catalog = catalog if catalog is not None else load_tool_catalog()
     registered: list[str] = []
     for tool in catalog:
+        is_submit_review = tool.name == "submit_review"
         ctx.register_tool(
             name=tool.name,
             toolset="learning",
             schema=tool.parameters,
-            handler=make_forwarder(client, tool.method, tool.path),
+            handler=make_forwarder(
+                client,
+                tool.method,
+                tool.path,
+                is_quiz_item=is_quiz_item if is_submit_review else None,
+                on_review=on_review if is_submit_review else None,
+            ),
             description=tool.description,
         )
         registered.append(tool.name)

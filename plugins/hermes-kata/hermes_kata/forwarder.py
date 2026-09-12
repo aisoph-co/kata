@@ -12,11 +12,20 @@ Each handler:
 - sends the bearer token + `X-Acting-Identity` header (via `client`);
 - maps the core's error codes to short, learner-facing text — never a raw
   403/JSON dump.
+
+Two optional hooks, both consulted only for `submit_review` (wired in by
+`catalog.py`, issue G1): `is_quiz_item` sends the resolved answer's identity
+with `platform="slack_thread"` when the item is one of today's tracked
+team-quiz items (`quiz.TeamQuizItemRegistry`) — already a valid enum value
+in the frozen contract, so the core's own `source` fallback writes `source =
+slack_thread` for it with no contract change; `on_review` feeds every
+*accepted* response back to `reveal.record_submit_review` so the team-quiz
+tally (and, for a correct answer, `CorrectAnswerers`) stays current.
 """
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 _PATH_PARAM = re.compile(r"\{(\w+)\}")
 
@@ -34,7 +43,14 @@ def _identity_header(person: dict[str, Any]) -> str:
     return header
 
 
-def make_forwarder(client, method: str, path: str) -> Callable[..., Any]:
+def make_forwarder(
+    client,
+    method: str,
+    path: str,
+    *,
+    is_quiz_item: Optional[Callable[[Any], bool]] = None,
+    on_review: Optional[Callable[..., None]] = None,
+) -> Callable[..., Any]:
     def handler(
         session_store,
         session_key: str,
@@ -61,14 +77,25 @@ def make_forwarder(client, method: str, path: str) -> Callable[..., Any]:
                 f"{{{param}}}", str(call_kwargs.pop(param))
             )
 
+        acting_person = person
+        if person is not None and is_quiz_item is not None and is_quiz_item(call_kwargs.get("item_id")):
+            acting_person = {**person, "platform": "slack_thread"}
+
         response = client.request(
             method,
             resolved_path,
-            identity=_identity_header(person) if person else None,
+            identity=_identity_header(acting_person) if acting_person else None,
             payload=call_kwargs,
         )
         if response.error_code is not None:
             return {"error": _ERROR_MESSAGES.get(response.error_code, _DEFAULT_ERROR_MESSAGE)}
+
+        if on_review is not None:
+            item_id = call_kwargs.get("item_id")
+            item_response = call_kwargs.get("response")
+            if item_id is not None and isinstance(item_response, dict):
+                on_review(item_id, item_response, person_name=person.get("display_name") if person else None)
+
         return response.data
 
     return handler
