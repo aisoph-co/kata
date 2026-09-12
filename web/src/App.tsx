@@ -1,29 +1,27 @@
+import { AppShell } from '@/components/AppShell'
 import { Auth0ProviderWithNavigate } from '@/components/Auth0ProviderWithNavigate'
 import { SessionGate } from '@/components/SessionGate'
+import { useRoute } from '@/lib/router'
+import { Dashboard } from '@/pages/Dashboard'
+import { Reps } from '@/pages/Reps'
 
 /**
- * W1 is the sign-in + role-confirmation gate only — the screens behind it
- * (topics/concept-map, quiz-taking, dashboard, team view: W2-W4) land in
- * their own issues. This placeholder is what a signed-in, role-confirmed
- * session renders today; `persona-menu-trigger` is the app-shell marker
- * `build-day/tests/e2e` looks for to know the gate has been passed.
+ * W1 built the sign-in + role-confirmation gate only. W2 is the learner's
+ * own two screens behind it: the quiz-taking engine (`/reps`, flow 4b) and
+ * the personal dashboard (`/dashboard`, frame 09). Topics/concept-map and
+ * the manager team view (W3, W4) land in their own issues, on their own
+ * routes, inside the same `AppShell`.
  */
-function SignedInPlaceholder() {
-  return (
-    <div className="gate-screen">
-      <div className="gate-card" data-testid="persona-menu-trigger">
-        <h1 className="gate-wordmark">KATA</h1>
-        <p className="gate-blurb">Signed in — the rest of the app is on its way.</p>
-      </div>
-    </div>
-  )
+function Screens() {
+  const route = useRoute()
+  return <AppShell>{route === '/dashboard' ? <Dashboard /> : <Reps />}</AppShell>
 }
 
 function App() {
   return (
     <Auth0ProviderWithNavigate>
       <SessionGate>
-        <SignedInPlaceholder />
+        <Screens />
       </SessionGate>
     </Auth0ProviderWithNavigate>
   )

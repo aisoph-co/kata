@@ -1,8 +1,10 @@
 # web
 
-Kata's web app. This issue (W1) builds Screen 1 (sign-in) and Screen 2
-(role confirmation) only — everything past that gate (topics/concept-map,
-quiz-taking, dashboard, team view) lands in its own issue.
+Kata's web app. W1 built Screen 1 (sign-in) and Screen 2 (role
+confirmation). W2 adds the two screens behind that gate: the quiz-taking
+engine (`/reps`) and the personal dashboard (`/dashboard`, frame 09).
+Topics/concept-map and the manager team view (W3, W4) land in their own
+issues, on their own routes inside the same `AppShell`.
 
 ## Sign-in
 
@@ -37,14 +39,41 @@ npm run build   # tsc -b && vite build
 npm test        # vitest
 ```
 
+## Quiz-taking engine and dashboard (W2)
+
+`/reps` renders `GET /me/next` one item at a time — a widget per `ItemKind`
+(mcq/msq/self_rated/short_answer/teach_back) matching the core spec's
+`response` shape table, confidence (1-5) captured before reveal, and a
+"just tell me" bypass. `POST /me/reviews` grades it; a replayed submission
+(same `idempotency_key`) comes back as a `409` whose body is the original
+result, rendered exactly like a fresh `200`. `teach_back` has no automated
+grader (`422 no_grader` on every real submission) so only the bypass path
+is offered for it.
+
+`/dashboard` reads `/me/progress` for the four tiles (retention, mastery,
+calibration, bypass rate) and `/me/concept-graph` for the mastery-per-concept
+table (names `/me/progress` doesn't carry). Two open gaps in the contract,
+degraded rather than worked around or invented:
+
+- **R3a** — `ProgressEntry` has no per-concept rep count yet, so that
+  column always reads "—".
+- **R3b** — there is no history/time-series endpoint, so the chart's 30-day
+  "what Kata believes you know" line, the bypass annotation and its
+  closing-question recovery, and the bypass-rate trend are all built from
+  the seed's own `docs/seed/3-history/reviews.jsonl` (`src/data/`) — a
+  scenario-specific shortcut for this fixed demo dataset, not a
+  generalized mechanism a real learner's dashboard could draw from today.
+
 ## Layout
 
 ```
 src/
-  pages/       SignIn, SignInRefused, RoleRequired, RoleConfirm
-  components/  SessionGate (the gate itself), Auth0ProviderWithNavigate
-  hooks/       useSessionResolve (POST /identities/resolve), useE2ESession
-  lib/         api-client, auth-config, session-store, role-confirm-store
+  pages/       SignIn, SignInRefused, RoleRequired, RoleConfirm, Reps, Dashboard
+  components/  SessionGate, AppShell, Auth0ProviderWithNavigate, reps/, dashboard/
+  hooks/       useSessionResolve, useE2ESession, useApiResource (GET /me/*)
+  lib/         api-client, auth-config, session-store, role-confirm-store,
+               router (path-based, no dependency), quiz-types, bkt-replay, format
+  data/        hugo-idempotency-history — the R3b seed-derived chart fixture
 Caddyfile      prod: static + SPA fallback, /api/* proxy, /__e2e/session
 vite.config.ts dev: same /api proxy + /__e2e/session, as a dev-server plugin
 ```
