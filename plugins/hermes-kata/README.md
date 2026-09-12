@@ -19,6 +19,11 @@ Spec: `docs/superpowers/specs/2026-09-06-hermes-surface-spec.md` in
 - `hermes_kata/client.py` — the learning-service HTTP client.
 - `hermes_kata/prompts.py` — the system-prompt instruction that routes
   `mcq`/`msq` items through the built-in `clarify` tool instead of chat text.
+- `hermes_kata/guardrails.py` — the Socratic guardrail constants (bypass
+  phrases, concession phrases, the 8-word overlap threshold) and the
+  system-prompt rules that state them; `tests/test_guardrails.py` runs the
+  five guardrail assertions against a seeded transcript until KAT-X3's
+  real eval set (AGCTM-16) lands.
 
 Toolset lockdown and session pruning are config, not code: see
 `deploy/kata/apply-config.sh`.
