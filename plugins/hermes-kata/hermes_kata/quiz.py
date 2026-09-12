@@ -29,6 +29,11 @@ CONFIDENCE_QUESTION = "Confidence (1-5) before you answer?"
 # Demo defaults — `docs/seed/verify_demo_beats.py`'s ten-persona golden
 # scenario: ten persons, the poster isn't one of the nine respondents.
 DEFAULT_ROSTER_SIZE = int(os.environ.get("KATA_QUIZ_ROSTER_SIZE", "9"))
+
+# Today's round when a caller (`commands.post_team_quiz`) doesn't name one
+# explicitly — the whole vendored demo catalog (`quiz_items.json`), until
+# Stage 2's content ingestion can choose a real daily concept.
+DEFAULT_TODAY_SLUGS: tuple[str, ...] = ("lm-1", "lm-2")
 DEFAULT_REVEAL_SECONDS = int(os.environ.get("KATA_QUIZ_REVEAL_SECONDS", "600"))
 
 
