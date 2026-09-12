@@ -154,7 +154,7 @@ def test_socratic_debate_skill_file_exists_and_has_frontmatter():
 def test_register_socratic_debate_skill_registers_the_bundled_file():
     ctx = FakePluginContext()
     register_socratic_debate_skill(ctx)
-    assert ctx.skills[SKILL_ID] == SKILL_PATH.read_text()
+    assert ctx.skills[SKILL_ID] == SKILL_PATH
 
 
 # --- Seeded transcript: all five rows run together (KAT-X3's harness shape) ---

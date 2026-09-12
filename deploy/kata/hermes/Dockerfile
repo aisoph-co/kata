@@ -30,10 +30,16 @@ COPY deploy/kata/hermes/tools.json /opt/kata/tools.json
 # volume from an older image. /opt/kata, never /opt/data — see above.
 COPY deploy/kata/hermes/apply-config.sh /opt/kata/apply-config.sh
 
-# s6-overlay cont-init hook: runs once per boot, before `gateway run`
-# starts, and syncs the baked plugin above onto the volume with a
+# s6-overlay cont-init hooks: run once per boot, in numeric order, before
+# `gateway run` starts. hermes-v3 has no guarantee its volume survives a
+# redeploy/recreate (KATA-17 deploy verification), so config.yaml settings
+# and the plugin's enabled state can't depend on a one-off manual step
+# having already run against whatever volume happens to be attached —
+# apply-config.sh (config + `plugins.enabled`) runs first, then
+# sync-kata-plugin.sh syncs the baked plugin onto the volume with a
 # delete-first copy so a stale directory can never win (sync-kata-plugin.sh
 # has the full story, including the 2026-09-10 incident).
+COPY --chmod=755 deploy/kata/hermes/apply-config.sh /etc/cont-init.d/49-apply-kata-config
 COPY --chmod=755 deploy/kata/hermes/sync-kata-plugin.sh /etc/cont-init.d/50-sync-kata-plugin
 
 # Everything else (config.yaml, .env, sessions, cron state) lives on the

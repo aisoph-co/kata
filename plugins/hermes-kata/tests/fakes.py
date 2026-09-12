@@ -15,7 +15,8 @@ assert against.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import Any, Callable, Mapping, Optional
 
 
 class FakeCronJobs:
@@ -45,7 +46,7 @@ class FakePluginContext:
         self.tools: dict[str, dict] = {}
         self.hooks: dict[str, list[Callable]] = {}
         self.system_prompt_sections: dict[str, dict] = {}
-        self.skills: dict[str, str] = {}
+        self.skills: dict[str, Path] = {}
         self.cron = FakeCron()
 
     def register_tool(self, *, name, toolset, schema, handler, description="", **_):
@@ -62,13 +63,22 @@ class FakePluginContext:
     def register_system_prompt_section(self, id, content, *, position="after_memory", max_chars=2000):
         self.system_prompt_sections[id] = {"content": content, "position": position, "max_chars": max_chars}
 
-    def register_skill(self, name: str, content: str):
-        # Mirrors the real `ctx.register_skill(name, skill_md)` (Hermes
-        # plugin developer docs): the real loader namespaces it as
-        # `<plugin.yaml name>:<name>` for the agent to load; this fake keeps
-        # the bare name since every test here only needs to see the id it
-        # was called with, not the loader's own namespacing.
-        self.skills[name] = content
+    def register_skill(
+        self, name: str, path: Path, description: str = "", frontmatter: Optional[Mapping[str, Any]] = None,
+    ):
+        # Mirrors the real `ctx.register_skill(name, path, description="",
+        # frontmatter=None)` (confirmed against `hermes_cli/plugins.py` on a
+        # live Hermes install, KATA-17 deploy verification — it takes the
+        # SKILL.md `Path` and calls `path.exists()` itself, raising
+        # `FileNotFoundError` if missing; earlier versions of this fake
+        # wrongly modeled it as taking the file's content, which let
+        # `guardrails.register_socratic_debate_skill` ship a call that broke
+        # against the real API). This fake keeps the bare name since every
+        # test here only needs to see the id it was called with, not the
+        # loader's own `<plugin.yaml name>:<name>` namespacing.
+        if not path.exists():
+            raise FileNotFoundError(f"SKILL.md not found at {path}")
+        self.skills[name] = path
 
 
 @dataclass

@@ -8,16 +8,22 @@
 #
 # Syncs the plugin baked into this image (/opt/kata/plugins/hermes-kata) onto
 # the persistent volume with a delete-first copy, so a stale directory from
-# an earlier manual deploy can never win: Hermes's plugin manager loads every
-# directory under $HERMES_HOME/.hermes/plugins/ (plugins/hermes-kata/README.md
-# "Installing into the Kata Hermes instance"), and the 2026-09-10 incident
-# was exactly a stale copy's handlers taking precedence over the current
-# ones. Delete-first, not overwrite-in-place, so a file removed upstream
-# also disappears here — never leave a backup beside it (KATA-31).
+# an earlier manual deploy can never win: Hermes's real "user" plugin
+# discovery sweep (hermes_cli/plugins_discovery.py::collect_directory_
+# manifests, confirmed against a live hermes-v3, KATA-17 deploy
+# verification) scans exactly `get_hermes_home() / "plugins"` — NOT
+# `$HERMES_HOME/.hermes/plugins/` as this plugin's own README previously
+# claimed (that path is never scanned at all; a plugin synced there is
+# invisible to `hermes plugins list`/`enable`/doctor and never registers a
+# single tool or hook, no matter how correct its code is). The 2026-09-10
+# incident was a stale copy's handlers taking precedence over the current
+# ones at this same, correct path. Delete-first, not overwrite-in-place, so
+# a file removed upstream also disappears here — never leave a backup
+# beside it (KATA-31).
 set -eu
 
 HOME_DIR="${HERMES_HOME:-/opt/data}"
-DEST="$HOME_DIR/.hermes/plugins/hermes-kata"
+DEST="$HOME_DIR/plugins/hermes-kata"
 
 rm -rf "$DEST"
 mkdir -p "$(dirname "$DEST")"

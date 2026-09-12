@@ -9,11 +9,19 @@ if it fails — the `socratic-debate` skill (see
 `_register_socratic_debate_skill_safely`).
 
 Loaded by Hermes as `import plugins.hermes-kata` would be if the package name
-were a valid identifier — in practice, via `importlib` against this file's
-own `submodule_search_locations`, same as the plugin loader documents (see
-`tests/test_plugin_register.py`). `from hermes_kata import ...` here resolves
-against the `hermes_kata/` package sitting next to this file, not a globally
-installed one.
+were a valid identifier — in practice, the real plugin manager (`hermes_cli/
+plugins_loader.py::_load_directory_module`) execs this file via `importlib`
+as `hermes_plugins.<slug>`, with `submodule_search_locations` set to this
+file's own directory. That only makes `hermes_kata` resolvable as a
+*relative* sibling import (`.hermes_kata`) — the loader never puts this
+plugin's directory on `sys.path`, so a bare `from hermes_kata import ...`
+raises `ModuleNotFoundError: No module named 'hermes_kata'` there (confirmed
+against a live `hermes-v3`, KATA-17 deploy verification: the plugin loaded
+under `pip install -e` in every test run, since the editable install already
+puts `hermes_kata` on `sys.path`, but silently failed to register at all in
+production). The `try/except ImportError` below tries the relative form
+first for the real loader, falling back to the absolute form for anything
+that execs this file with no package context (e.g. a stray direct import).
 """
 
 from __future__ import annotations
@@ -22,13 +30,22 @@ import os
 from pathlib import Path
 from typing import Any
 
-from hermes_kata.client import LearningServiceClient
-from hermes_kata.digest import create_digest_jobs, load_digest_roster, team_recipient_from_env
-from hermes_kata.guardrails import register_guardrails_section, register_socratic_debate_skill
-from hermes_kata.identity import SessionIdentityCache, SessionStoreHandle, register_identity_hook
-from hermes_kata.mcq import register_mcq_rendering_section
-from hermes_kata.quiz import ensure_quiz_thread_identity
-from hermes_kata.tools import JobIdentityRegistry, make_identity_resolver, register_tools
+try:
+    from .hermes_kata.client import LearningServiceClient
+    from .hermes_kata.digest import create_digest_jobs, load_digest_roster, team_recipient_from_env
+    from .hermes_kata.guardrails import register_guardrails_section, register_socratic_debate_skill
+    from .hermes_kata.identity import SessionIdentityCache, SessionStoreHandle, register_identity_hook
+    from .hermes_kata.mcq import register_mcq_rendering_section
+    from .hermes_kata.quiz import ensure_quiz_thread_identity
+    from .hermes_kata.tools import JobIdentityRegistry, make_identity_resolver, register_tools
+except ImportError:
+    from hermes_kata.client import LearningServiceClient
+    from hermes_kata.digest import create_digest_jobs, load_digest_roster, team_recipient_from_env
+    from hermes_kata.guardrails import register_guardrails_section, register_socratic_debate_skill
+    from hermes_kata.identity import SessionIdentityCache, SessionStoreHandle, register_identity_hook
+    from hermes_kata.mcq import register_mcq_rendering_section
+    from hermes_kata.quiz import ensure_quiz_thread_identity
+    from hermes_kata.tools import JobIdentityRegistry, make_identity_resolver, register_tools
 
 
 def register(ctx: Any) -> None:
@@ -79,21 +96,17 @@ def _register_digest_jobs(ctx: Any, client: LearningServiceClient, job_identitie
 
 
 def _register_socratic_debate_skill_safely(ctx: Any) -> None:
-    """`ctx.register_skill` is unverified against the real Hermes plugin API
-    (review round on this issue) — unlike `register_tool`/`register_hook`/
-    `register_system_prompt_section`, which each already run in production
-    via `tools.py`/`identity.py`/`mcq.py`, nothing else in this plugin calls
-    `register_skill` yet, and this build has no real Hermes install or
-    `hermes-v3` access to confirm its signature against (`hermes` is a
-    separate team's service; out of reach here).
+    """`ctx.register_skill(name, path, description="", frontmatter=None)` —
+    confirmed against the real Hermes plugin API on a live `hermes-v3`
+    (KATA-17 deploy verification; see `guardrails.register_socratic_debate_
+    skill`'s docstring for the `path` vs. content mixup this caught).
 
-    So this call is ordered last in `register()`, after everything already
-    proven to work, and any failure — wrong signature, `SKILL_PATH` missing
-    at deploy time, `ctx` not exposing `register_skill` at all — is swallowed
-    here rather than raised, so it can't take down the identity hook, tool
-    catalog, mcq section, or digest jobs registered above it. This is a
-    reduced-blast-radius mitigation, not a substitute for the real signature
-    check the next person with `hermes-v3` access should still do.
+    This call is still ordered last in `register()`, after everything else
+    already proven to work, and any failure — `SKILL_PATH` missing at
+    deploy time, `ctx` not exposing `register_skill` at all, a future Hermes
+    signature change — is swallowed here rather than raised, so it can't
+    take down the identity hook, tool catalog, mcq section, or digest jobs
+    registered above it.
     """
     register_skill = getattr(ctx, "register_skill", None)
     if register_skill is None:
