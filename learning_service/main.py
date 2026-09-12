@@ -311,6 +311,10 @@ from learning_service.admin import router as _admin_router  # noqa: E402
 
 app.include_router(_admin_router)
 
+from learning_service.ingest import router as _ingest_router  # noqa: E402
+
+app.include_router(_ingest_router)
+
 from learning_service.progress.router import router as _progress_router  # noqa: E402
 
 app.include_router(_progress_router)

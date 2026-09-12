@@ -3,14 +3,17 @@ import { ConceptGraph } from '@/components/ConceptGraph'
 import { SourceList } from '@/components/SourceList'
 import { TopicCard } from '@/components/TopicCard'
 import { useConnectionsData } from '@/hooks/useConnectionsData'
+import { useIngestion } from '@/hooks/useIngestion'
 import { findOwnTopic } from '@/lib/connections-model'
 import { useWebSession } from '@/lib/session-store'
 
 /**
- * Screen 1 / SCREENS.md #02 ("Connections", frame 02) — W3. Renders from
- * the already-loaded seed (`GET /me/concept-graph`, `GET /topics`), not a
- * live ingestion run: Stage 2's CI1 upgrades this same screen to stream a
- * live run, additive to this issue's own scope.
+ * Screen 1 / SCREENS.md #02 ("Connections", frame 02) — W3, upgraded by
+ * KATA-13/CI1 to wire "Connect team context" to a live ingestion run
+ * (`useIngestion`, `POST /admin/ingest`). The snapshot itself still comes
+ * from `useConnectionsData` (`GET /me/concept-graph` + `GET /topics`) —
+ * `useIngestion`'s own counters give the fast, in-flight "derived so far"
+ * read; `data.refetch()` pulls the authoritative graph once a run settles.
  *
  * `design/DESIGN-SYSTEM.md`'s empty-state requirement: this is the state a
  * fresh, unseeded workspace shows — no source list, no stream, no invented
@@ -20,9 +23,9 @@ import { useWebSession } from '@/lib/session-store'
 export function Connections() {
   const session = useWebSession()
   const data = useConnectionsData(session?.header ?? '')
+  const ingestion = useIngestion(session?.header ?? '', data.refetch)
   const mountedAt = useRef(performance.now())
   const [topicsVisibleAtSeconds, setTopicsVisibleAtSeconds] = useState<number | null>(null)
-  const [connectNote, setConnectNote] = useState<string | null>(null)
 
   const hasData = data.topics.length > 0 || data.graph.nodes.length > 0
 
@@ -36,20 +39,31 @@ export function Connections() {
 
   const ownTopic = findOwnTopic(data.topics, session.role)
 
-  // No ingestion-trigger endpoint exists yet (sub-project 4, CI1) — the
-  // action is a real, present click target (both states show it, per the
-  // empty-state requirement above) but honestly states the gap rather than
-  // pretending to start a run that has nowhere to start.
   const connectAction = session.isOperator && (
     <div className="connections-connect">
       <button
         type="button"
         data-testid="connections-connect-action"
-        onClick={() => setConnectNote('Ingestion trigger is not wired yet — CI1 adds the live run behind this action.')}
+        disabled={ingestion.status === 'running'}
+        onClick={ingestion.start}
       >
         Connect team context
       </button>
-      {connectNote && <p className="gate-status">{connectNote}</p>}
+      {ingestion.status === 'running' && (
+        <p data-testid="connections-ingesting" className="gate-status">
+          Ingesting… {ingestion.conceptCount} concept{ingestion.conceptCount === 1 ? '' : 's'} so far.
+        </p>
+      )}
+      {ingestion.status === 'empty' && (
+        <p data-testid="connections-no-issues" className="gate-status">
+          No issues found.
+        </p>
+      )}
+      {ingestion.status === 'error' && (
+        <p data-testid="connections-ingest-error" className="gate-status gate-status--error">
+          {ingestion.error}
+        </p>
+      )}
     </div>
   )
 

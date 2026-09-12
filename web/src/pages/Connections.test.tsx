@@ -1,15 +1,18 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useConnectionsData } from '@/hooks/useConnectionsData'
+import { useIngestion } from '@/hooks/useIngestion'
 import { useWebSession } from '@/lib/session-store'
 import type { ConceptGraphResponse, Topic } from '@/lib/connections-model'
 
 vi.mock('@/hooks/useConnectionsData', () => ({ useConnectionsData: vi.fn() }))
+vi.mock('@/hooks/useIngestion', () => ({ useIngestion: vi.fn() }))
 vi.mock('@/lib/session-store', () => ({ useWebSession: vi.fn() }))
 
 import { Connections } from './Connections'
 
 const mockUseConnectionsData = vi.mocked(useConnectionsData)
+const mockUseIngestion = vi.mocked(useIngestion)
 const mockUseWebSession = vi.mocked(useWebSession)
 
 const LEARNER = {
@@ -83,7 +86,15 @@ function dataState(overrides: Partial<ReturnType<typeof useConnectionsData>> = {
   }
 }
 
+function ingestionState(overrides: Partial<ReturnType<typeof useIngestion>> = {}) {
+  return { status: 'idle' as const, conceptCount: 0, topicCount: 0, error: null, start: vi.fn(), ...overrides }
+}
+
 describe('Connections', () => {
+  beforeEach(() => {
+    mockUseIngestion.mockReturnValue(ingestionState())
+  })
+
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
@@ -190,5 +201,62 @@ describe('Connections', () => {
     // Card 1 (t1, PAY-1847) is first — its chip is the first `cited-issue-id`.
     fireEvent.click(screen.getAllByTestId('cited-issue-id')[0])
     expect(screen.getByTestId('connections-excerpt-panel')).toHaveTextContent(/payment intent/)
+  })
+
+  it('clicking Connect team context starts ingestion', () => {
+    mockUseWebSession.mockReturnValue(OPERATOR)
+    mockUseConnectionsData.mockReturnValue(dataState())
+    const start = vi.fn()
+    mockUseIngestion.mockReturnValue(ingestionState({ start }))
+
+    render(<Connections />)
+
+    fireEvent.click(screen.getByTestId('connections-connect-action'))
+    expect(start).toHaveBeenCalled()
+  })
+
+  it('shows live progress and disables the action while a run is in flight', () => {
+    mockUseWebSession.mockReturnValue(OPERATOR)
+    mockUseConnectionsData.mockReturnValue(dataState())
+    mockUseIngestion.mockReturnValue(ingestionState({ status: 'running', conceptCount: 3 }))
+
+    render(<Connections />)
+
+    expect(screen.getByTestId('connections-ingesting')).toHaveTextContent('3 concepts so far')
+    expect(screen.getByTestId('connections-connect-action')).toBeDisabled()
+  })
+
+  it('states "no issues found" for an empty source, with zero concepts and no spinner', () => {
+    mockUseWebSession.mockReturnValue(OPERATOR)
+    mockUseConnectionsData.mockReturnValue(dataState())
+    mockUseIngestion.mockReturnValue(ingestionState({ status: 'empty' }))
+
+    render(<Connections />)
+
+    expect(screen.getByTestId('connections-no-issues')).toHaveTextContent('No issues found')
+    expect(screen.queryByTestId('connections-loading')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('connections-ingesting')).not.toBeInTheDocument()
+    expect(screen.getByTestId('connections-empty')).toBeInTheDocument()
+  })
+
+  it('states a failed ingestion run rather than a blank action', () => {
+    mockUseWebSession.mockReturnValue(OPERATOR)
+    mockUseConnectionsData.mockReturnValue(dataState())
+    mockUseIngestion.mockReturnValue(ingestionState({ status: 'error', error: 'ingestion failed: 500' }))
+
+    render(<Connections />)
+
+    expect(screen.getByTestId('connections-ingest-error')).toHaveTextContent('ingestion failed: 500')
+  })
+
+  it('refetches the snapshot once a run settles', () => {
+    mockUseWebSession.mockReturnValue(OPERATOR)
+    const refetch = vi.fn()
+    mockUseConnectionsData.mockReturnValue(dataState({ refetch }))
+
+    render(<Connections />)
+
+    // `Connections` passes `data.refetch` straight through as `onSettled`.
+    expect(useIngestion).toHaveBeenCalledWith(OPERATOR.header, refetch)
   })
 })
