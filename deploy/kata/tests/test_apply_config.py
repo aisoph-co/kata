@@ -59,3 +59,9 @@ def test_instance_level_guardrails_are_set(config_after_apply):
     assert config_after_apply["memory"]["user_profile_enabled"] is False
     assert config_after_apply["security"]["redact_secrets"] is True
     assert config_after_apply["terminal"]["backend"] == "modal"
+
+
+def test_model_provider_is_named_not_auto(config_after_apply):
+    """`auto` resolves to an Anthropic key the Kata services do not carry."""
+    assert config_after_apply["model"]["provider"] == "openrouter"
+    assert config_after_apply["model"]["default"]
