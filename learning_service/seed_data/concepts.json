@@ -1,0 +1,206 @@
+{
+  "course": {
+    "slug": "ferry-payments-core",
+    "title": "Ferry Payments Core",
+    "description": "How money actually moves through Ferry: authorisation, retries, the ledger, FX, compliance and settlement."
+  },
+  "_note": "Fourteen concepts. Twelve are the original golden-scenario course; `challenge-flow-ux` and `payment-status-communication` were added with the UXD persona (AGCTM-12) so that persona has a topic with a real concept map rather than a label. Prerequisite edges are acyclic; max depth is 3.",
+  "concepts": [
+    {
+      "slug": "money-representation",
+      "title": "Representing money",
+      "depth": 0,
+      "mastery_threshold": 0.85,
+      "description": "Minor units, integer arithmetic, why floats lose cents, currency exponents that aren't 2 (JPY, KWD)."
+    },
+    {
+      "slug": "idempotency",
+      "title": "Idempotency keys",
+      "depth": 0,
+      "mastery_threshold": 0.85,
+      "description": "What an idempotency key protects, what it must cover, how long it lives, and what happens when it expires mid-retry."
+    },
+    {
+      "slug": "double-entry",
+      "title": "Double-entry ledger",
+      "depth": 0,
+      "mastery_threshold": 0.85,
+      "description": "Every movement is two postings that sum to zero; balances are derived, postings are immutable."
+    },
+    {
+      "slug": "payment-state-machine",
+      "title": "Payment state machine",
+      "depth": 1,
+      "mastery_threshold": 0.85,
+      "description": "Authorised, captured, settled, refunded, disputed \u2014 and which transitions are illegal."
+    },
+    {
+      "slug": "webhook-delivery",
+      "title": "Webhook delivery",
+      "depth": 1,
+      "mastery_threshold": 0.85,
+      "description": "At-least-once delivery, dedupe on the receiver, ordering guarantees you do not have, and backoff with a cap."
+    },
+    {
+      "slug": "fx-quote-lifecycle",
+      "title": "FX quote lifecycle",
+      "depth": 1,
+      "mastery_threshold": 0.85,
+      "description": "Quote, spread, expiry, and who carries the risk when a quote expires between authorisation and capture."
+    },
+    {
+      "slug": "ledger-migrations",
+      "title": "Ledger migrations",
+      "depth": 1,
+      "mastery_threshold": 0.9,
+      "description": "Backfilling a table nobody may lock: chunked batches, off-peak windows, dry runs against a production snapshot."
+    },
+    {
+      "slug": "retry-safety",
+      "title": "Retrying safely",
+      "depth": 2,
+      "mastery_threshold": 0.85,
+      "description": "Retrying a payment without charging twice: shared idempotency key, bounded attempts, and telling the customer."
+    },
+    {
+      "slug": "psp-contract-testing",
+      "title": "PSP contract testing",
+      "depth": 2,
+      "mastery_threshold": 0.85,
+      "description": "Adapter boundaries, recorded fixtures going stale, and detecting provider drift before the provider tells you."
+    },
+    {
+      "slug": "sca-exemptions",
+      "title": "SCA and exemptions",
+      "depth": 0,
+      "mastery_threshold": 0.85,
+      "description": "PSD2 strong customer authentication, which exemptions Ferry claims, and the evidence each one requires. Standalone: understanding the regulation does not require the payment state machine, which is why the PM can master it and the engineers have not."
+    },
+    {
+      "slug": "reconciliation",
+      "title": "Reconciliation",
+      "depth": 2,
+      "mastery_threshold": 0.85,
+      "description": "Matching the bank's settlement file to our ledger, classifying breaks, and why a break is never 'just rounding'."
+    },
+    {
+      "slug": "payout-settlement",
+      "title": "Payout and settlement",
+      "depth": 3,
+      "mastery_threshold": 0.85,
+      "description": "T+2 cutoffs, funding, batching per currency, and what a merchant sees when a payout is short."
+    },
+    {
+      "slug": "challenge-flow-ux",
+      "title": "Challenge flow: mandated vs chosen",
+      "depth": 1,
+      "mastery_threshold": 0.85,
+      "description": "Which parts of the 3DS/SCA challenge screen the regulator requires, which the card scheme requires, and which are Ferry's own product choice \u2014 and how to tell them apart when a stakeholder asks to remove a step. Grounded in `checkout-api` (3DS challenge flow) and PAY-1870."
+    },
+    {
+      "slug": "payment-status-communication",
+      "title": "Communicating an uncertain payment",
+      "depth": 3,
+      "mastery_threshold": 0.85,
+      "description": "What the customer and the merchant are shown while a payment is retrying, held, or short-paid \u2014 and why 'Failed' and 'Not yet succeeded' are different claims. Grounded in PAY-1852 (show retry state to the customer), PAY-1826 and PAY-1869."
+    }
+  ],
+  "prerequisite_edges": [
+    {
+      "from": "money-representation",
+      "to": "payment-state-machine"
+    },
+    {
+      "from": "money-representation",
+      "to": "fx-quote-lifecycle"
+    },
+    {
+      "from": "idempotency",
+      "to": "webhook-delivery"
+    },
+    {
+      "from": "idempotency",
+      "to": "retry-safety"
+    },
+    {
+      "from": "double-entry",
+      "to": "ledger-migrations"
+    },
+    {
+      "from": "double-entry",
+      "to": "reconciliation"
+    },
+    {
+      "from": "payment-state-machine",
+      "to": "retry-safety"
+    },
+    {
+      "from": "payment-state-machine",
+      "to": "psp-contract-testing"
+    },
+    {
+      "from": "fx-quote-lifecycle",
+      "to": "reconciliation"
+    },
+    {
+      "from": "fx-quote-lifecycle",
+      "to": "payout-settlement"
+    },
+    {
+      "from": "reconciliation",
+      "to": "payout-settlement"
+    },
+    {
+      "from": "sca-exemptions",
+      "to": "challenge-flow-ux"
+    },
+    {
+      "from": "payment-state-machine",
+      "to": "payment-status-communication"
+    },
+    {
+      "from": "retry-safety",
+      "to": "payment-status-communication"
+    }
+  ],
+  "related_edges": [
+    {
+      "a": "retry-safety",
+      "b": "webhook-delivery",
+      "weight": 0.8,
+      "_why": "Both are at-least-once problems solved by dedupe. Genuinely confusable, so co-review (core spec, next-item selection step 3) should pull them together."
+    },
+    {
+      "a": "reconciliation",
+      "b": "payout-settlement",
+      "weight": 0.7
+    },
+    {
+      "a": "money-representation",
+      "b": "fx-quote-lifecycle",
+      "weight": 0.6
+    },
+    {
+      "a": "ledger-migrations",
+      "b": "reconciliation",
+      "weight": 0.55
+    },
+    {
+      "a": "psp-contract-testing",
+      "b": "sca-exemptions",
+      "weight": 0.5
+    },
+    {
+      "a": "challenge-flow-ux",
+      "b": "payment-state-machine",
+      "weight": 0.5,
+      "_why": "The challenge is a state in the flow, not a screen bolted onto it. UXD who miss this design a step the state machine cannot reach."
+    },
+    {
+      "a": "payment-status-communication",
+      "b": "webhook-delivery",
+      "weight": 0.6,
+      "_why": "The merchant's view of a payment is whatever the last delivered webhook said. At-least-once delivery is why the UI can show a stale status."
+    }
+  ]
+}
