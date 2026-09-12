@@ -10,38 +10,83 @@ import { RoleConfirm } from '@/pages/RoleConfirm'
 import { RoleRequired } from '@/pages/RoleRequired'
 import { SignIn } from '@/pages/SignIn'
 import { SignInRefused } from '@/pages/SignInRefused'
+import { SignInUnavailable } from '@/pages/SignInUnavailable'
 
 /**
- * Screen 1 + Screen 2's gate (W1): sign in via Auth0, resolve the verified
- * email against the roster, confirm the resolved role, then either render
- * the app as that person or show a fixed refusal/blocking screen. A no-op
- * passthrough when Auth0 isn't configured for this deployment
- * (`AUTH_ENABLED`) — no tenant exists in this workspace yet.
+ * Screen 1 + Screen 2's gate (W1). The e2e bypass (finding #5) is checked
+ * first and unconditionally — it must work whether or not this deployment
+ * has an Auth0 tenant configured at all, since a test/CI deployment may set
+ * `E2E_AUTH_BYPASS_TOKEN` with no tenant to log into. Only once no bypass
+ * is granted does whether Auth0 is configured (`AUTH_ENABLED`) matter: with
+ * it, a real visitor goes through Auth0; without it, there is no way to
+ * authenticate anyone at all, so this blocks with a fixed screen rather
+ * than rendering the app for anyone — a misconfigured deployment fails
+ * closed, never open.
  */
 export function SessionGate({ children }: { children: ReactNode }) {
-  if (!AUTH_ENABLED) return <>{children}</>
+  const e2e = useE2ESession()
+
+  if (e2e.isPending) return <SignIn status="loading" />
+
+  if (e2e.data) {
+    const bypassIdentity: SessionIdentity = { subject: e2e.data.email, email: e2e.data.email }
+    // No Auth0 session to log out of under the bypass (there may be no
+    // Auth0Provider mounted at all) — a reload just re-runs this same
+    // e2e-bypass check, which is all "back to sign-in" can mean here.
+    return (
+      <ResolveAndConfirm identity={bypassIdentity} bypass onBack={() => window.location.reload()}>
+        {children}
+      </ResolveAndConfirm>
+    )
+  }
+
+  if (!AUTH_ENABLED) return <SignInUnavailable />
+
   return <RequireAuth0Session>{children}</RequireAuth0Session>
 }
 
 function RequireAuth0Session({ children }: { children: ReactNode }) {
   const auth0 = useAuth0()
-  // Finding #5 (AGCTM-64): the server-granted e2e bypass. When it is
-  // granted, the seed learner it names stands in for the Auth0 user: same
-  // resolve call, same refusal on a miss, role taken as confirmed. Its
-  // subject is the email itself, so every later call's
-  // `X-Acting-Identity: web:<email>` is the `(web, <email>)` identity the
-  // roster import created — the one thing the core can resolve. When the
-  // bypass isn't granted (every real deployment), nothing below changes.
-  const e2e = useE2ESession()
-  const bypass = e2e.data ?? null
-  const identity: SessionIdentity | null = bypass
-    ? { subject: bypass.email, email: bypass.email }
-    : auth0.isAuthenticated && auth0.user?.email_verified === true && auth0.user.email && auth0.user.sub
-      ? { subject: auth0.user.sub, email: auth0.user.email }
-      : null
 
+  if (auth0.isLoading) return <SignIn status="loading" />
+  if (auth0.error) return <SignIn status="error" message={auth0.error.message} />
+  if (!auth0.isAuthenticated) return <SignIn status="signed-out" />
+
+  const onBack = () => auth0.logout({ logoutParams: { returnTo: window.location.origin } })
+
+  // email_verified: false gets the same fixed refusal as an unknown
+  // identity — never reaches `POST /identities/resolve` at all.
+  if (auth0.user?.email_verified !== true || !auth0.user.email || !auth0.user.sub) {
+    return <SignInRefused onBack={onBack} />
+  }
+
+  return (
+    <ResolveAndConfirm identity={{ subject: auth0.user.sub, email: auth0.user.email }} onBack={onBack}>
+      {children}
+    </ResolveAndConfirm>
+  )
+}
+
+/**
+ * Screen 1's resolve + Screen 2's role confirmation — shared by the real
+ * Auth0 path and the e2e bypass path alike, so both go through the same
+ * `POST /identities/resolve` and the same refusal/role-required behavior.
+ * Only the bypass path (`bypass: true`) treats the resolved role as
+ * already confirmed (finding #5); a real sign-in still needs an explicit
+ * confirm/change click every session.
+ */
+function ResolveAndConfirm({
+  identity,
+  bypass = false,
+  onBack,
+  children,
+}: {
+  identity: SessionIdentity
+  bypass?: boolean
+  onBack: () => void
+  children: ReactNode
+}) {
   const resolve = useSessionResolve(identity)
-  const subject = identity?.subject
   const resolved = resolve.data
   const roleConfirm = useRoleConfirm()
   const sessionConfirmedRole = resolved && roleConfirm.personId === resolved.id ? roleConfirm.role : null
@@ -53,39 +98,24 @@ function RequireAuth0Session({ children }: { children: ReactNode }) {
   // neither a stale identity nor a stale role survives for the next
   // visitor on the same browser.
   useEffect(() => {
-    if (!resolved || !subject || !confirmedRole) return
+    if (!resolved || !confirmedRole) return
     setWebSession({
       personId: resolved.id,
       displayName: resolved.display_name,
       email: resolved.email,
       isOperator: resolved.is_operator,
       role: confirmedRole,
-      header: `web:${subject}`,
+      header: `web:${identity.subject}`,
     })
     return () => {
       clearWebSession()
       resetRoleConfirm()
     }
-  }, [resolved, subject, confirmedRole])
-
-  // One round trip before anything else: is this browser an e2e run the
-  // service has been told to let through? (A 404 answers within the same
-  // origin — no visible delay for a real visitor.)
-  if (e2e.isPending) return <SignIn status="loading" />
-
-  if (!bypass) {
-    if (auth0.isLoading) return <SignIn status="loading" />
-    if (auth0.error) return <SignIn status="error" message={auth0.error.message} />
-    if (!auth0.isAuthenticated) return <SignIn status="signed-out" />
-
-    // email_verified: false never reaches the core at all (`identity` stays
-    // null, so useSessionResolve never fires) — same refusal screen either way.
-    if (auth0.user?.email_verified !== true) return <SignInRefused />
-  }
+  }, [resolved, confirmedRole, identity.subject])
 
   if (resolve.isError) {
     if (resolve.error instanceof ApiError && resolve.error.status === 403) {
-      return <SignInRefused />
+      return <SignInRefused onBack={onBack} />
     }
     const message = resolve.error instanceof Error ? resolve.error.message : undefined
     return <SignIn status="error" message={message} />
@@ -95,7 +125,7 @@ function RequireAuth0Session({ children }: { children: ReactNode }) {
 
   // Screen 2, failure path B: no role on record for this person at all —
   // blocked with an explicit prompt, never a silent default.
-  if (!resolved.role) return <RoleRequired />
+  if (!resolved.role) return <RoleRequired onBack={onBack} />
 
   // Screen 2, happy path: a role is on record but this session hasn't
   // confirmed it yet — confirm/change gate before anything else renders.
