@@ -62,7 +62,7 @@ def test_register_wires_the_socratic_guardrails_section_and_skill(plugin_module)
     plugin_module.register(ctx)
 
     assert ctx.system_prompt_sections[SECTION_ID]["content"] == SYSTEM_PROMPT_GUARDRAILS
-    assert ctx.skills[SKILL_ID] == SKILL_PATH.read_text()
+    assert ctx.skills[SKILL_ID] == SKILL_PATH
 
 
 def test_register_tolerates_a_ctx_with_no_register_skill_at_all(plugin_module, monkeypatch, tmp_path):

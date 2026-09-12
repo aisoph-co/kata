@@ -63,7 +63,7 @@ MAX_CHARS = 2000
 # The `socratic-debate` skill ships inside this plugin's own directory
 # (`plugins/hermes-kata/skills/socratic-debate/SKILL.md`), a sibling of this
 # `hermes_kata/` package, not a separate deploy step. Hermes plugins
-# register skills programmatically (`ctx.register_skill(name, content)` in
+# register skills programmatically (`ctx.register_skill(name, path)` in
 # `register()`); the loader namespaces it by the plugin's `plugin.yaml` name
 # as `hermes-kata:socratic-debate` — the id `build-day/scripts/
 # start-demo-dm.sh`'s `--skill` flag passes.
@@ -170,11 +170,18 @@ def register_guardrails_section(ctx: Any) -> None:
 
 
 def register_socratic_debate_skill(ctx: Any, skill_path: Path = SKILL_PATH) -> None:
-    """Reads the bundled `SKILL.md` and hands its content to Hermes's own
-    skill registry, namespaced by the plugin as `hermes-kata:socratic-debate`.
-    Without this call the file sits on disk unused — the same failure mode
-    `register_guardrails_section` fixed for `SYSTEM_PROMPT_GUARDRAILS`."""
-    ctx.register_skill(SKILL_ID, skill_path.read_text())
+    """Hands the bundled `SKILL.md`'s path to Hermes's own skill registry,
+    namespaced by the plugin as `hermes-kata:socratic-debate`. Without this
+    call the file sits on disk unused — the same failure mode
+    `register_guardrails_section` fixed for `SYSTEM_PROMPT_GUARDRAILS`.
+
+    `ctx.register_skill(name, path, ...)` takes the file's `Path`, not its
+    content — it calls `path.exists()` itself (confirmed against the real
+    Hermes plugin API on `hermes-v3`, KATA-17 deploy verification; passing
+    `path.read_text()` here instead raised `'str' object has no attribute
+    'exists'` and aborted the whole plugin's registration, not just this
+    skill)."""
+    ctx.register_skill(SKILL_ID, skill_path)
 
 
 def is_two_line_closing_summary(closing_text: str, scheduling_marker: str = "\n\n") -> bool:

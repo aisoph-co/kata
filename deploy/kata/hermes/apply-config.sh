@@ -3,7 +3,11 @@
 # Idempotent: runs `hermes config set` for every key, which is the supported
 # way to edit config.yaml (a stray indent from a hand edit can break the gateway).
 #
-# Run inside the container:
+# Runs automatically at boot (COPY'd into /etc/cont-init.d/49-apply-kata-config
+# by the Dockerfile, right before 50-sync-kata-plugin) — the hermes-v3 volume
+# is not guaranteed to survive a redeploy/recreate, so nothing here can depend
+# on a one-off manual step having already run against the current volume.
+# Still safe to re-run manually against a live container:
 #   Railway:  railway ssh --service hermes -- sh /opt/data/apply-config.sh
 #             (pipe it in first: railway ssh --service hermes -- sh -s < deploy/kata/hermes/apply-config.sh)
 #   Compose:  docker compose run --rm hermes sh /opt/kata/apply-config.sh
@@ -20,7 +24,24 @@
 # instead of Hermes' anonymous, rate-limited keyless tier.
 # plugins/hermes-kata/tests/test_toolset_lockdown.py runs this file against a
 # stubbed `hermes` and asserts the property, without a live Hermes.
+#
+# plugins.enabled: Hermes plugins are opt-in by default (`hermes plugins
+# list` shows "not enabled" until this runs) — without it the hermes-kata
+# plugin's files can be baked into the image and synced onto the volume by
+# sync-kata-plugin.sh and still never register a single tool or hook
+# (KATA-17 deploy verification).
 set -eu
+
+# s6-overlay's cont-init stage does not reliably hand this script the
+# container's own HERMES_HOME (confirmed against a live hermes-v3, KATA-17
+# deploy verification): without it, `hermes config set` below falls back to
+# Hermes's native default (the `hermes` user's own $HOME/.hermes, i.e.
+# /opt/data/.hermes here) instead of the real config at $HERMES_HOME
+# directly — writing config nobody reads, and if /opt/data/.hermes happens
+# to already exist with the wrong ownership (e.g. left root-owned by an
+# earlier manual `railway ssh` deploy), failing outright with `PermissionError:
+# .../cron`. Same defensive default sync-kata-plugin.sh already uses.
+export HERMES_HOME="${HERMES_HOME:-/opt/data}"
 
 BACKEND="${TERMINAL_BACKEND:-modal}"
 MODEL="${HERMES_MODEL:-openai/gpt-5.6-luna}"
@@ -51,7 +72,8 @@ set -- \
   'platform_toolsets.telegram=["learning","clarify"]' \
   'platform_toolsets.discord=["learning","clarify"]' \
   'platform_toolsets.whatsapp_cloud=["learning","clarify"]' \
-  'platform_toolsets.signal=["learning","clarify"]'
+  'platform_toolsets.signal=["learning","clarify"]' \
+  'plugins.enabled=["hermes-kata"]'
 
 for kv in "$@"; do
   key="${kv%%=*}"

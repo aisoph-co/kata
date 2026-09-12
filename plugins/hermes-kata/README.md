@@ -98,10 +98,23 @@ commands above.
 
 ## Installing into the Kata Hermes instance
 
-The plugin's source lives in this repo (not baked into the Hermes image).
-Deploy it as a project plugin: copy `plugins/hermes-kata/` onto the `hermes`
-service's `$HERMES_HOME/.hermes/plugins/hermes-kata/`, then restart the
-gateway so it picks up the new plugin on the next boot.
+`deploy/kata/hermes/Dockerfile` bakes this directory into the `hermes-v3`
+image at `/opt/kata/plugins/hermes-kata`, and its `sync-kata-plugin.sh`
+cont-init hook copies it onto the volume at boot, at
+`$HERMES_HOME/plugins/hermes-kata/` — Hermes's real "user" plugin discovery
+sweep (`hermes_cli/plugins_discovery.py::collect_directory_manifests`) scans
+exactly `get_hermes_home() / "plugins"`, confirmed against a live `hermes-v3`
+(KATA-17 deploy verification). `$HERMES_HOME/.hermes/plugins/` — this
+section's own claim before that verification — is never scanned at all; a
+copy placed there is invisible to `hermes plugins list`/`enable`/`doctor`
+and never registers a single tool or hook. `apply-config.sh` sets
+`plugins.enabled: ["hermes-kata"]` (Hermes plugins are opt-in by default) —
+also run automatically at boot, as of KATA-17.
+
+For a manual/non-Railway install: copy `plugins/hermes-kata/` onto the
+`hermes` service's `$HERMES_HOME/plugins/hermes-kata/`, run `hermes plugins
+enable hermes-kata`, then restart the gateway so it picks up the new plugin
+on the next boot.
 
 `LEARNING_SERVICE_URL`/`LEARNING_SERVICE_TOKEN` must already be set in the
 Hermes environment (`deploy/kata/env.hermes.example`) — if they aren't yet in
