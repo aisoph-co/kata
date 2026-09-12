@@ -88,6 +88,8 @@ curl http://localhost:8080/healthz && curl http://localhost:8080/en   # both -> 
 | `HERMES_API_URL` / `HERMES_API_KEY` | runtime service env | Hermes OpenAI-compatible endpoint the runtime forwards every turn to |
 | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` | runtime service env | Verifies the caller's ID token against the tenant's JWKS |
 | `WEB_BASE_URL` | runtime service env | The one origin the runtime accepts browser calls from |
+| `LEARNING_SERVICE_URL` / `LEARNING_SERVICE_TOKEN` | runtime service env | AE-25 insight lane: the runtime's own calls to the learning service (`/me/*`, `/team/*`). Unset — insight lane off, popup stays Hermes-only |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | runtime service env | AE-25 insight lane's model. Unset — insight replies use a plain template instead of an LLM-phrased sentence (numbers are unaffected either way) |
 | `OPENROUTER_API_KEY` | `../.env` (API repo root) | Read by `demo-up.sh`, passed to the API only |
 | `LEARNING_SEED`/`LEARNING_LLM`/`OPENROUTER_MODEL` | set by `demo-up.sh` | Passed to the API; `LEARNING_SEED=golden` for the synthetic fixture |
 
