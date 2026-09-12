@@ -17,5 +17,5 @@ __all__ = ["register", "LearningServiceClient"]
 def register(ctx) -> None:
     client = LearningServiceClient()
     register_tools(ctx, client)
-    ctx.register_pre_gateway_dispatch(make_pre_gateway_dispatch(client))
+    ctx.register_hook("pre_gateway_dispatch", make_pre_gateway_dispatch(client))
     register_item_rendering_prompt(ctx)

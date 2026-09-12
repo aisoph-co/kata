@@ -43,9 +43,17 @@ class FakeSessionStore:
 
 
 class FakePluginContext:
+    """Mirrors the real Hermes `PluginContext` surface this plugin actually
+    uses — `register_tool`, `register_hook`, `register_system_prompt_section`
+    — and nothing else. There is no `register_pre_gateway_dispatch`
+    shortcut on the real API, so there isn't one here either: a plugin that
+    calls a nonexistent method fails this fake with `AttributeError`
+    instead of passing a suite that never exercised real registration.
+    """
+
     def __init__(self):
         self.tools: dict[str, dict[str, Any]] = {}
-        self.pre_gateway_dispatch_hooks: list[Callable] = []
+        self.hooks: dict[str, list[Callable]] = {}
         self.prompt_sections: dict[str, Any] = {}
 
     def register_tool(self, name, toolset, schema, handler, description):
@@ -56,8 +64,8 @@ class FakePluginContext:
             "description": description,
         }
 
-    def register_pre_gateway_dispatch(self, callback):
-        self.pre_gateway_dispatch_hooks.append(callback)
+    def register_hook(self, hook_name, callback):
+        self.hooks.setdefault(hook_name, []).append(callback)
 
     def register_system_prompt_section(self, name, callback, position="after_memory", **kwargs):
         self.prompt_sections[name] = {"callback": callback, "position": position}
