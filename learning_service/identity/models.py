@@ -1,7 +1,5 @@
-"""SQLAlchemy models for `person`, `identity`, `link_code` (spec §Identity,
-roles, teams → Tables). `Base` is shared by every package so a single
-Alembic chain and a single `Base.metadata.create_all()` cover the whole
-schema.
+"""SQLAlchemy models for `person` and `identity` (spec §Identity, roles, teams
+→ Tables). `link_code` and `focus` are US-A2 and later.
 """
 
 from __future__ import annotations
@@ -33,9 +31,10 @@ class Person(Base):
     email: Mapped[str] = mapped_column(unique=True)
     is_operator: Mapped[bool] = mapped_column(default=False)
     manager_id: Mapped[str | None] = mapped_column(ForeignKey("person.id"), default=None)
-    # tech_lead | senior_swe | junior_swe | pm | uxd, set at roster-import
-    # time (spec §Identity, roles, teams; OPEN-QUESTIONS.md Q4). Not
-    # DB-enforced as an enum so a new role never needs a migration.
+    # Contract v1.2.0: tech_lead | senior_swe | junior_swe | pm | uxd,
+    # set at roster-import time (spec §Identity, roles, teams; web-app-design.md
+    # Contract change #8). Not DB-enforced as an enum so a new role never
+    # needs a migration.
     role: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -48,11 +47,8 @@ class Identity(Base):
 
     id: Mapped[str] = mapped_column(primary_key=True, default=_uuid)
     person_id: Mapped[str] = mapped_column(ForeignKey("person.id"))
-    # slack | telegram | discord | whatsapp | signal | web
     platform: Mapped[str]
     external_id: Mapped[str]
-    # A platform's stable alternate ID when it has one (e.g. a Signal UUID),
-    # mirroring what the Hermes gateway supplies.
     alt_id: Mapped[str | None] = mapped_column(default=None)
     is_primary: Mapped[bool] = mapped_column(default=False)
     linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -61,10 +57,6 @@ class Identity(Base):
 
 
 class LinkCode(Base):
-    """One-time, 15-minute-expiry code for linking a second platform
-    identity to an already-resolved person (spec §Identity, roles, teams →
-    Rules, "Linking a second platform")."""
-
     __tablename__ = "link_code"
 
     code: Mapped[str] = mapped_column(primary_key=True)

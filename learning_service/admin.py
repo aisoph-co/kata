@@ -1,41 +1,54 @@
-"""`POST /admin/replay` (spec §Learning engine, "Replay"): a scheduling or
-mastery bug is fixed by replay, not migration. Truncates `card_state` and
-`concept_state`, then rebuilds them by iterating the append-only `review`
-log in `(person_id, reviewed_at, id)` order through `apply_review` — the
-same step `POST /me/reviews` uses live — so replayed state is identical to
-live state.
-
-`openapi.yaml` documents `403 "Not an operator"` for this route, so it is
-gated on `require_operator` (a real `Person.is_operator` check), unlike a
-prior reference implementation that only checked the service token.
+"""`POST /admin/roster/import` (spec §Identity, roles, teams → Roster
+seeding). Adapted from `agency-v1/learning_service/admin.py`, which also
+carries `POST /admin/replay` — that route rebuilds `card_state`/
+`concept_state` from the review log, so it belongs to the `engine` package
+(KATA-2's follow-up issue, which depends on this one) and is not vendored
+here.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from learning_service.engine.replay import rebuild_derived_state
-from learning_service.engine.repository import LearningRepository
-from learning_service.engine.sql_repository import SqlLearningRepository
-from learning_service.main import get_repository, require_operator
+from learning_service.db import get_session
+from learning_service.identity.schemas import PersonSummary
+from learning_service.main import _error, require_service_token
+from learning_service.roster.schemas import RosterImportRequest, RosterImportResult
+from learning_service.roster.service import (
+    InvalidRole,
+    SlackIdentityConflict,
+    UnknownManager,
+    WebIdentityConflict,
+    import_roster,
+)
 
 router = APIRouter()
 
 
-@router.post("/admin/replay")
-async def admin_replay(
-    _: None = Depends(require_operator),
-    repo: LearningRepository = Depends(get_repository),
-) -> dict[str, Any]:
-    # `rebuild_derived_state` only touches `repo`'s in-memory dicts, so a
-    # concurrent `/me/next` reading through a *different*
-    # `SqlLearningRepository` instance never sees a half-rebuilt state:
-    # `persist_derived_state` below is the one write, one transaction, one
-    # commit that makes the rebuild visible to Postgres at all.
-    counts = rebuild_derived_state(repo)
-    if isinstance(repo, SqlLearningRepository):
-        await repo.persist_derived_state()
-
-    return {"status": "ok", **counts}
+@router.post("/admin/roster/import", response_model=RosterImportResult)
+async def admin_roster_import(
+    body: RosterImportRequest,
+    _: None = Depends(require_service_token),
+    session: AsyncSession = Depends(get_session),
+) -> RosterImportResult:
+    try:
+        persons, created, updated = await import_roster(session, persons=body.persons)
+    except UnknownManager as exc:
+        raise _error(422, "validation_error", f"manager_email {exc} does not match any person") from exc
+    except SlackIdentityConflict as exc:
+        raise _error(422, "validation_error", f"slack_user_id {exc} is already linked to a different person") from exc
+    except InvalidRole as exc:
+        raise _error(422, "validation_error", f"role {exc} is not a recognized role") from exc
+    except WebIdentityConflict as exc:
+        raise _error(422, "validation_error", f"email {exc} is already linked to a different person") from exc
+    return RosterImportResult(
+        created=created,
+        updated=updated,
+        persons=[
+            PersonSummary(
+                id=p.id, display_name=p.display_name, email=p.email, is_operator=p.is_operator, role=p.role
+            )
+            for p in persons
+        ],
+    )

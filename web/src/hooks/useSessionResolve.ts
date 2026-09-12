@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api-client'
 
-/** The core's real `PersonSummary` (`contracts/openapi.yaml`). */
+/** The core's real `PersonSummary` (`learning_service/identity/schemas.py`) —
+ * richer than the demo persona bar's local copy in `useResolvedIdentity.ts`
+ * (that one predates Contract change #8's `role` field; not touched here,
+ * out of scope for W1). */
 export interface ResolvedSessionPerson {
   id: string
   display_name: string
@@ -17,64 +20,32 @@ export interface SessionIdentity {
   email: string
 }
 
-interface ResolveState {
-  data: ResolvedSessionPerson | null
-  isPending: boolean
-  isError: boolean
-  error: Error | null
-}
-
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase()
 }
-
-const IDLE: ResolveState = { data: null, isPending: false, isError: false, error: null }
 
 /**
  * Screen 1's happy path: once there is a verified email to act on, resolve
  * it against the roster via `POST /identities/resolve` — `platform: "web"`,
  * `external_id` the normalized email, `X-Acting-Identity: web:<subject>`.
- * A no-op while `identity` is null. The web app never writes identity
- * state itself; a miss surfaces as the same `403 unknown_identity` every
- * other surface gets. Each distinct `(subject, email)` pair resolves once.
+ * Disabled (never called) while `identity` is null. The web app never
+ * writes identity state itself; a miss surfaces as the same
+ * `403 unknown_identity` every other surface gets.
  */
-export function useSessionResolve(identity: SessionIdentity | null): ResolveState {
-  const key = identity ? `${identity.subject}:${identity.email}` : null
-  const [state, setState] = useState<ResolveState>(key ? { ...IDLE, isPending: true } : IDLE)
-  const lastKey = useRef<string | null>(null)
+export function useSessionResolve(identity: SessionIdentity | null) {
+  const subject = identity?.subject
+  const email = identity?.email
 
-  useEffect(() => {
-    if (!identity || !key) {
-      lastKey.current = null
-      setState(IDLE)
-      return
-    }
-    if (lastKey.current === key) return
-    lastKey.current = key
-
-    let cancelled = false
-    setState({ ...IDLE, isPending: true })
-    apiFetch<ResolvedSessionPerson>('/identities/resolve', {
-      persona: { header: `web:${identity.subject}` },
-      method: 'POST',
-      body: { platform: 'web', external_id: normalizeEmail(identity.email) },
-    })
-      .then((data) => {
-        if (!cancelled) setState({ data, isPending: false, isError: false, error: null })
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setState({ data: null, isPending: false, isError: true, error: error as Error })
-      })
-
-    return () => {
-      cancelled = true
-    }
-    // Deliberately keyed on `key` alone: `identity` is a fresh object
-    // literal on every caller render (SessionGate builds one inline), so
-    // depending on it directly would re-run this effect — and cancel the
-    // in-flight fetch — on every unrelated re-render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
-
-  return state
+  return useQuery({
+    queryKey: ['session-resolve', subject, email],
+    queryFn: () =>
+      apiFetch<ResolvedSessionPerson>('/identities/resolve', {
+        persona: { header: `web:${subject}` },
+        method: 'POST',
+        body: { platform: 'web', external_id: normalizeEmail(email!) },
+      }),
+    enabled: !!email && !!subject,
+    retry: false,
+    staleTime: Infinity,
+  })
 }

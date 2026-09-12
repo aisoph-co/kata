@@ -1,10 +1,10 @@
 """Identity resolution (spec §Identity, roles, teams → Rules): exact
-`(platform, external_id)` match, then `(platform, alt_id)`; otherwise
-unknown. A person is never created here — this only looks up.
+`(platform, external_id)` match, then `(platform, alt_id)`; otherwise unknown.
+A person is never created here — this only looks up.
 
-Also covers linking a second platform: `mint_link_code` issues a one-time,
-15-minute code for an already-resolved person; `consume_link_code` redeems
-it once to attach a new platform identity to that person.
+Also covers US-A2 linking: `mint_link_code` issues a one-time, 15-minute
+code for an already-resolved person; `consume_link_code` redeems it once
+to attach a new platform identity to that person.
 """
 
 from __future__ import annotations
@@ -61,8 +61,8 @@ async def mint_link_code(session: AsyncSession, *, person_id: str) -> LinkCode:
 
 def _as_utc(dt: datetime) -> datetime:
     # SQLite (used in tests) drops tzinfo on round-trip even for a
-    # `DateTime(timezone=True)` column; Postgres preserves it. Values in
-    # this table are always written in UTC, so a naive value is UTC too.
+    # `DateTime(timezone=True)` column; Postgres preserves it. Values in this
+    # table are always written in UTC, so a naive value is UTC too.
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 

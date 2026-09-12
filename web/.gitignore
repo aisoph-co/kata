@@ -1,0 +1,42 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# secrets
+.env
+.env.*
+!.env.example
+# not a secret — a deliberately wrong token used by e2e/auth-401.spec.ts
+!.env.test401
+# not a secret — placeholders only, real values go in .env.auth0.local
+!.env.auth0.example
+
+# playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# demo runner state (pid/log files)
+.demo/
+.run/
