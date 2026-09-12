@@ -4,7 +4,11 @@
 # runtime — no secrets baked into the image.
 FROM node:22-alpine AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
+# .npmrc carries legacy-peer-deps=true, required for `npm ci` to resolve
+# @copilotkit/runtime's transitive optional peers (a known npm/arborist
+# bug, see .npmrc comment) — omitting it here silently drops back to npm's
+# modern resolver and `npm ci` fails on unrelated-looking version mismatches.
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 COPY . .
 # AE-24: sign-in gate config. Vite inlines VITE_* at build time, so these
