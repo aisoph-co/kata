@@ -1,0 +1,100 @@
+/* Scoped to the team view/drill-down (KATA-8/W4) — doesn't touch
+ * `index.css`'s shared gate-* classes, since W2/W3 land their own screens
+ * against the same file in parallel. */
+
+.team-view {
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.team-view-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.team-badge {
+  font-size: 0.75rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid #1e293b; /* slate-800 */
+  color: #94a3b8; /* slate-400 */
+}
+
+.team-heatmap {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.team-heatmap th,
+.team-heatmap td {
+  border: 1px solid #1e293b; /* slate-800 */
+  padding: 0.375rem 0.5rem;
+  text-align: center;
+  font-size: 0.8125rem;
+}
+
+.team-heatmap-row-button {
+  background: none;
+  border: none;
+  color: #22d3ee; /* cyan-400 */
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+/* Five p_known bands (`lib/p-known-bands.ts`) */
+.team-heatmap td[data-band='unseen'] {
+  background: #1e293b; /* slate-800 */
+}
+.team-heatmap td[data-band='emerging'] {
+  background: #7c2d12; /* amber-900-ish */
+}
+.team-heatmap td[data-band='developing'] {
+  background: #92400e; /* amber-700-ish */
+}
+.team-heatmap td[data-band='approaching'] {
+  background: #155e75; /* cyan-800-ish */
+}
+.team-heatmap td[data-band='mastered'] {
+  background: #065f46; /* emerald-800-ish */
+}
+
+.team-side-panel,
+.team-drilldown {
+  border: 1px solid #1e293b; /* slate-800 */
+  border-radius: 0.5rem;
+  padding: 1rem;
+  background: #0f172a; /* slate-900 */
+}
+
+.team-drilldown-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.team-drilldown-summary {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem 1rem;
+}
+
+.team-drilldown-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.team-drilldown-table th,
+.team-drilldown-table td {
+  border: 1px solid #1e293b;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.team-privacy-note {
+  font-size: 0.75rem;
+  color: #fb7185; /* rose-400 */
+}
