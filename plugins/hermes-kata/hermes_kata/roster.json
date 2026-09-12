@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Vendored roster snapshot commands.sync_digest_jobs plans against — one entry per person with an id (from POST /admin/roster/import's response) and, when known, a slack_user_id (from the same import's request). Empty until roster import (KATA-4) has actually run in this environment; KATA_ROSTER_JSON overrides this path with no code change, same convention hermes_kata/tools.json and hermes_kata/quiz_items.json already use. An empty list is correct here, not a bug — it must never be filled in with fabricated recipients.",
+  "persons": []
+}
