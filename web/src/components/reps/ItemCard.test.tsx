@@ -106,6 +106,23 @@ describe('ItemCard', () => {
     expect(keys[0]).toBe(keys[1])
   })
 
+  it('a 409 on "Submit again" replaces the original panel — renders identically, never both at once', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(200, RESULT)).mockResolvedValueOnce(jsonResponse(409, RESULT))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ItemCard item={mcqItem()} session={SESSION} onNext={vi.fn()} />)
+    fireEvent.click(screen.getByLabelText('200'))
+    fireEvent.click(screen.getByTestId('submit-answer'))
+    await waitFor(() => expect(screen.getByTestId('review-result')).toHaveAttribute('data-replay', 'false'))
+
+    fireEvent.click(screen.getByTestId('submit-again'))
+    await waitFor(() => expect(screen.getByTestId('review-result')).toHaveAttribute('data-replay', 'true'))
+
+    // Exactly one result panel on screen — the replay never renders
+    // alongside the original it replayed.
+    expect(screen.getAllByTestId('review-result')).toHaveLength(1)
+  })
+
   it('teach_back has no gradeable submit — only the bypass path (422 no_grader on every real grade attempt)', () => {
     vi.stubGlobal('fetch', vi.fn())
     const item: ItemPublic = { ...mcqItem(), kind: 'teach_back', payload: {} }
