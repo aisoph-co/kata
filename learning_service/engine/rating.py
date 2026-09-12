@@ -1,16 +1,17 @@
 """Rating mapping per item kind (spec §Learning engine, "Rating mapping").
 
-`msq`'s scoring and FSRS-rating buckets are from the AGCTM-10 comment
-thread that added it in v1.1.0 (comment `01a07655`, field names corrected
-in `01a0769e`) — deliberately different bucket edges from `short_answer`,
-so the two are not shared.
+`msq` is in the frozen contract (`ItemKind` enum, `contracts/openapi.yaml`)
+but not spelled out in the core design spec's own rating table; its scoring
+and FSRS-rating buckets below are deliberately distinct from
+`short_answer`'s, so the two never share bucket edges by accident.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-# self_rated: learner's 1-4 rating used directly; grade recorded per table.
+# self_rated: learner's 1-4 rating used directly; grade recorded per the
+# spec's own table (0 / 0.5 / 0.85 / 1.0).
 SELF_RATED_GRADE = {1: 0.0, 2: 0.5, 3: 0.85, 4: 1.0}
 
 

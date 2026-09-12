@@ -1,7 +1,7 @@
-"""CRUD and validation for course/concept/concept_edge/item/topic (spec
-§Curriculum). Prerequisite edges are validated acyclic within a course on
-every write; related edges are normalized lowest-id-first and carry a weight
-in (0, 1]. Item payloads are validated against their kind's shape.
+"""CRUD and validation for course/concept/concept_edge/item (US-C1, AGCTM-38,
+spec §Curriculum). Prerequisite edges are validated acyclic within a course
+on every write; related edges are normalized lowest-id-first and carry a
+weight in (0, 1].
 """
 
 from __future__ import annotations
@@ -12,21 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from learning_service.curriculum.models import Concept, ConceptEdge, Course, Item, Topic, TopicConcept
 from learning_service.roster.schemas import ROLES
 
-# spec §Curriculum → Item payloads.
-ITEM_KINDS = {"mcq", "self_rated", "short_answer", "teach_back"}
+ITEM_KINDS = {"mcq", "msq", "self_rated", "short_answer", "teach_back"}
 EDGE_KINDS = {"prerequisite", "related"}
 ITEM_STATUSES = {"draft", "published"}
-
-# kind -> keys stripped from learner-facing reads (spec §Curriculum → Item
-# payloads). Shape is documented, not enforced at write time: an admin item
-# write is trusted content authoring, and a missing key surfaces as a
-# grading-time error (`grading` package), not a curriculum one.
-_ITEM_PAYLOAD_STRIPPED_KEYS: dict[str, set[str]] = {
-    "mcq": {"correct_index"},
-    "self_rated": {"answer"},
-    "short_answer": {"reference", "rubric"},
-    "teach_back": {"reference", "rubric"},
-}
 
 
 class ValidationError(Exception):
@@ -39,15 +27,6 @@ class CycleError(Exception):
 
 class NotFoundError(Exception):
     """No row with this id."""
-
-
-def strip_item_payload(kind: str, payload: dict) -> dict:
-    """Learner-facing item reads strip `correct_index`/`answer`/`reference`/
-    `rubric` (spec §Curriculum → Item payloads): the explanation and
-    reference answer are returned only in the review result, after grading.
-    """
-    stripped_keys = _ITEM_PAYLOAD_STRIPPED_KEYS[kind]
-    return {k: v for k, v in payload.items() if k not in stripped_keys}
 
 
 # ---------------------------------------------------------------------------
@@ -394,8 +373,8 @@ async def delete_item(session: AsyncSession, item_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Topic (OPEN-QUESTIONS.md Q6): a named subgraph of a course — one per
-# persona/role.
+# Topic (Contract v1.2.0, OPEN-QUESTIONS.md Q6, web-app-design.md Contract
+# change #5): a named subgraph of a course — one per persona/role.
 # ---------------------------------------------------------------------------
 
 

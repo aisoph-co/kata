@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from learning_service.identity.schemas import PersonSummary
 
+
 ROLES = {"tech_lead", "senior_swe", "junior_swe", "pm", "uxd"}
 
 
@@ -14,9 +15,9 @@ class RosterImportPerson(BaseModel):
     display_name: str
     manager_email: str | None = None
     slack_user_id: str | None = None
-    # Not provided leaves an existing person's is_operator/role untouched on
-    # a reimport, same as manager_email/slack_user_id already do
-    # (OPEN-QUESTIONS.md Q4).
+    # Contract v1.2.0 (OPEN-QUESTIONS.md Q4, web-app-design.md Contract change
+    # #8): not provided leaves an existing person's is_operator/role
+    # untouched on a reimport, same as manager_email/slack_user_id already do.
     is_operator: bool | None = None
     role: str | None = None
 

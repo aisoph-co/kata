@@ -39,7 +39,7 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:
-    """A session for callers outside the request cycle (startup seed, cron
-    entry points) that can't use the `get_session` FastAPI dependency."""
+    """A session for callers outside the request cycle (startup seed, the
+    `seed` CLI) that can't use the `get_session` FastAPI dependency."""
     async with _get_sessionmaker()() as session:
         yield session

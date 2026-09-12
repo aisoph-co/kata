@@ -1,8 +1,8 @@
-"""Closed-form BKT concept-state update (spec §Learning engine, "BKT").
+"""Closed-form BKT concept-state update (spec §Learning engine, "BKT"),
+constants copied verbatim from the spec's own code block.
 
-Pure function of `(p_known, kind, correct)` — no wall-clock or randomness,
-so a replay of the `review` log reproduces `concept_state` exactly
-(AGCTM-36).
+Pure function of `(p_known, kind, correct)` — no wall-clock or randomness —
+so replaying the `review` log reproduces `concept_state` exactly (KAT-X4).
 """
 
 from __future__ import annotations
