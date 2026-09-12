@@ -40,6 +40,7 @@ untouched. Bypass headers are stripped before `/api/*` reaches the core.
 
 ```
 src/                one file per screen/component (see pages/, components/)
+server/             CopilotKit runtime for the in-app Kata bot (its own service)
 scripts/            demo-up.sh, demo-down.sh, reset-demo-db.sh
 Dockerfile          node:22 build -> caddy:2-alpine runtime
 Caddyfile           static + SPA fallback, /api/* proxy, /healthz
@@ -52,6 +53,8 @@ npm run dev        # UI only, API not started
 npm run dev:auth0   # same, with the sign-in gate on (needs .env.auth0.local)
 npm run build       # tsc -b && vite build
 npm run lint        # oxlint
+npm run server:dev   # CopilotKit runtime on :8090, watch mode
+npm run test:server  # runtime identity tests (node --test)
 ```
 
 ## Docker / Caddy
@@ -81,6 +84,10 @@ curl http://localhost:8080/healthz && curl http://localhost:8080/en   # both -> 
 | `LEARNING_SERVICE_TOKEN` | container env (prod) | Bearer token Caddy injects into `/api/*` |
 | `PORT` | container env (prod) | Caddy listen port, default `8080` |
 | `E2E_AUTH_BYPASS_TOKEN` | container env (test deployments) / `web/.env` (dev) | Enables `/__e2e/session` for requests carrying the same value — see "e2e auth bypass" above. Unset = 404 = no bypass |
+| `VITE_COPILOTKIT_RUNTIME_URL` | build-time only | In-app Kata bot. Unset (default) — no popup |
+| `HERMES_API_URL` / `HERMES_API_KEY` | runtime service env | Hermes OpenAI-compatible endpoint the runtime forwards every turn to |
+| `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` | runtime service env | Verifies the caller's ID token against the tenant's JWKS |
+| `WEB_BASE_URL` | runtime service env | The one origin the runtime accepts browser calls from |
 | `OPENROUTER_API_KEY` | `../.env` (API repo root) | Read by `demo-up.sh`, passed to the API only |
 | `LEARNING_SEED`/`LEARNING_LLM`/`OPENROUTER_MODEL` | set by `demo-up.sh` | Passed to the API; `LEARNING_SEED=golden` for the synthetic fixture |
 
