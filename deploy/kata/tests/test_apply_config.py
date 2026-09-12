@@ -59,3 +59,22 @@ def test_instance_level_guardrails_are_set(config_after_apply):
     assert config_after_apply["memory"]["user_profile_enabled"] is False
     assert config_after_apply["security"]["redact_secrets"] is True
     assert config_after_apply["terminal"]["backend"] == "modal"
+
+
+def test_slack_gets_web_search_for_content_freshness(config_after_apply):
+    """KATA-15: the Slack bot gets Exa-backed web search — `web` joins its
+    toolset (still inside the subset-of-{learning,clarify,web} ceiling
+    above). No other configured platform gains it; nothing else asked for
+    content-freshness checks."""
+    toolsets = config_after_apply["platform_toolsets"]
+    assert set(toolsets["slack"]) == {"learning", "clarify", "web"}
+    for platform in ("telegram", "discord", "whatsapp_cloud", "signal"):
+        assert "web" not in set(toolsets[platform])
+
+
+def test_web_search_backend_is_exa(config_after_apply):
+    """KATA-15: pin the `web` toolset to the keyed Exa provider
+    (`EXA_API_KEY`, a Railway secret on the hermes service — reserved in
+    the planning repo's deploy/kata/env.hermes.example) rather than the
+    anonymous keyless ring — reliable, not rate-limited under demo load."""
+    assert config_after_apply["web"]["backend"] == "exa"
