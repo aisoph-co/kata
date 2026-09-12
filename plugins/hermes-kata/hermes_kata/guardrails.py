@@ -181,6 +181,11 @@ def bypass_is_honoured(transcript: Transcript) -> bool:
             return False
         if reply.text.count("?") != 1:
             return False
+        # The answer must come first, no lecture, and exactly one closing
+        # question after it — not a question opener like "Want the answer
+        # first? The answer is …", which reverses that order.
+        if not reply.text.strip().endswith("?"):
+            return False
     return True
 
 

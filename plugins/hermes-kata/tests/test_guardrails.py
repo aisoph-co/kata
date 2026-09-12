@@ -174,6 +174,20 @@ def test_bypass_without_a_capped_review_fails():
     assert transcript.turns[4].tool_calls[0]["args"]["grade"] > BYPASS_GRADE_CAP
 
 
+def test_bypass_question_before_the_answer_fails_the_ordering_check():
+    """Reviewer's counterexample on PR #4: a lone `?` doesn't prove the
+    question closes the reply — it must come after the answer, not before
+    it ("Want the answer first? The answer is …" reverses that order)."""
+    transcript = _seeded_transcript()
+    transcript.turns[4] = Turn(
+        role="assistant",
+        text="Want the answer first? The answer is undefined behavior.",
+        tool_calls=transcript.turns[4].tool_calls,
+    )
+
+    assert not bypass_is_honoured(transcript)
+
+
 def test_missing_scheduled_review_at_close_fails_not_silently_accepted():
     transcript = _seeded_transcript()
     transcript.turns[-1].tool_calls = []
