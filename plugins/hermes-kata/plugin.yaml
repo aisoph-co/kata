@@ -1,0 +1,6 @@
+name: hermes-kata
+version: "0.1.0"
+description: "The Hermes<->learning-service integration surface (spec: docs/superpowers/specs/2026-09-06-hermes-surface-spec.md), sub-project 2 of 5. This build: binds a turn to a learner identity, registers the frozen tools.json catalog, renders mcq/msq items via clarify, and schedules the due-rep/team-quiz/teach-back digest cron jobs. No other file talks to the learning service."
+author: "AI Soph — Kata"
+hooks:
+  - pre_gateway_dispatch

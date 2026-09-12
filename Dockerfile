@@ -21,10 +21,8 @@ RUN apt-get update \
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir .
 
-# The rest of this monorepo: `plugins/hermes-kata` so
-# `roster.service.plan_digest_jobs_count` can reach `hermes_kata.digests`
-# (best-effort — see that module's own docstring), and `learning_service/`
-# itself, seed data included.
+# The rest of this monorepo: `plugins/hermes-kata` (the Hermes surface, not
+# imported by the core) and `learning_service/` itself, seed data included.
 COPY . .
 
 ENV PORT=8000

@@ -1,122 +1,104 @@
-"""KATA-24 (issue G1): a resolved `submit_review` answer to a tracked
-team-quiz item is sent with `platform="slack_thread"` — already a valid
-enum value in the frozen contract, so the core's own `source` fallback
-writes `source = slack_thread` for it, no contract change — and every
-accepted response feeds the team-quiz tally. Every other tool call, and a
-`submit_review` call against a non-quiz item, is unaffected."""
-from conftest import FakeSessionStore
+"""`tools/registry.py::dispatch` pipes a plugin tool handler's return straight
+into `_normalize_handler_result`, which accepts only `str` (or the
+`_multimodal` envelope) — a bare dict/list/None is logged as an "unsupported
+result type" and replaced with an error string instead of reaching the
+model. Every forwarded `learning` tool must return a JSON string, never the
+parsed object `LearningServiceClient.request` gives back internally.
+"""
 
-from hermes_kata.forwarder import make_forwarder
-from hermes_kata.quiz import TeamQuizItemRegistry
-from hermes_kata.reveal import QuizTally, record_submit_review
+from __future__ import annotations
 
+import json
 
-class FakeSubmitReviewClient:
-    def __init__(self):
-        self.sent = None
+import pytest
+from fakes import FakeLearningServiceClient
 
-    def request(self, method, path, identity, payload):
-        self.sent = {"method": method, "path": path, "identity": identity, "payload": payload}
-
-        class _Response:
-            error_code = None
-            data = {"grade": 1.0}
-
-        return _Response()
+from hermes_kata.client import ActingIdentity, LearningServiceError
+from hermes_kata.tools import make_forwarder
 
 
-def _session_store_with(person):
-    store = FakeSessionStore()
-    store.set("sess-1", "kata_person", person)
-    return store
+def _identity_resolver(identity: ActingIdentity):
+    return lambda **_: identity
 
 
-def test_a_quiz_item_answer_is_sent_with_platform_slack_thread():
-    client = FakeSubmitReviewClient()
-    registry = TeamQuizItemRegistry()
-    registry.mark(["lm-1", "lm-2"])
-    handler = make_forwarder(client, "POST", "/me/reviews", is_quiz_item=registry.is_quiz_item)
+def test_get_forwarder_returns_a_json_string_not_a_dict():
+    client = FakeLearningServiceClient()
+    client.set_response("GET", "/me/progress", {"concepts": [{"id": "c1", "mastery": 0.5}]})
+    identity = ActingIdentity(platform="slack", external_id="U000")
+    handler = make_forwarder(client, "GET", "/me/progress", resolve_identity=_identity_resolver(identity))
 
-    handler(
-        _session_store_with({"id": "person-1", "platform": "slack", "external_id": "U1"}),
-        "sess-1",
-        item_id="lm-1",
-        idempotency_key="key-1",
-        response={"choice": 2},
-    )
+    result = handler({}, session_id="sess-1")
 
-    assert client.sent["identity"] == "slack_thread:U1"
+    assert isinstance(result, str)
+    assert json.loads(result) == {"concepts": [{"id": "c1", "mastery": 0.5}]}
 
 
-def test_a_non_quiz_item_answer_keeps_the_learners_own_platform():
-    client = FakeSubmitReviewClient()
-    registry = TeamQuizItemRegistry()
-    registry.mark(["lm-1", "lm-2"])
-    handler = make_forwarder(client, "POST", "/me/reviews", is_quiz_item=registry.is_quiz_item)
+def test_post_forwarder_returns_a_json_string():
+    client = FakeLearningServiceClient()
+    client.set_response("POST", "/me/reviews", {"grade": 1.0, "correct": True})
+    identity = ActingIdentity(platform="slack", external_id="U000")
+    handler = make_forwarder(client, "POST", "/me/reviews", resolve_identity=_identity_resolver(identity))
 
-    handler(
-        _session_store_with({"id": "person-1", "platform": "slack", "external_id": "U1"}),
-        "sess-1",
-        item_id="some-other-item",
-        idempotency_key="key-2",
-        response={"choice": 1},
-    )
+    result = handler({"item_id": "i1", "idempotency_key": "k1", "response": {"choice": 1}}, session_id="sess-1")
 
-    assert client.sent["identity"] == "slack:U1"
+    assert isinstance(result, str)
+    assert json.loads(result) == {"grade": 1.0, "correct": True}
 
 
-def test_other_tools_are_unaffected_by_is_quiz_item():
-    client = FakeSubmitReviewClient()
-    registry = TeamQuizItemRegistry()
-    registry.mark(["lm-1"])
-    handler = make_forwarder(client, "GET", "/me/next", is_quiz_item=registry.is_quiz_item)
+def test_forwarder_serializes_a_list_result():
+    client = FakeLearningServiceClient()
+    client.set_response("GET", "/me/notes", [{"text": "a"}, {"text": "b"}])
+    identity = ActingIdentity(platform="slack", external_id="U000")
+    handler = make_forwarder(client, "GET", "/me/notes", resolve_identity=_identity_resolver(identity))
 
-    handler(_session_store_with({"id": "person-1", "platform": "slack", "external_id": "U1"}), "sess-1", limit=5)
+    result = handler({}, session_id="sess-1")
 
-    assert client.sent["identity"] == "slack:U1"
-
-
-def test_on_review_feeds_an_accepted_response_into_the_tally():
-    client = FakeSubmitReviewClient()
-    tally = QuizTally()
-    seen = []
-
-    def on_review(item_id, response, *, person_name=None):
-        seen.append((item_id, response, person_name))
-        record_submit_review(tally, item_id, response)
-
-    handler = make_forwarder(client, "POST", "/me/reviews", on_review=on_review)
-
-    handler(
-        _session_store_with({"id": "person-1", "display_name": "Hugo", "platform": "slack", "external_id": "U1"}),
-        "sess-1",
-        item_id="lm-1",
-        idempotency_key="key-1",
-        response={"choice": 2},
-    )
-
-    assert seen == [("lm-1", {"choice": 2}, "Hugo")]
-    assert tally.counts_for("lm-1") == {2: 1}
+    assert isinstance(result, str)
+    assert json.loads(result) == [{"text": "a"}, {"text": "b"}]
 
 
-def test_on_review_is_not_called_when_the_core_rejects_the_submission():
-    class RejectingClient(FakeSubmitReviewClient):
-        def request(self, method, path, identity, payload):
-            class _Response:
-                error_code = "not_a_manager"
-                data = None
+def test_forwarder_serializes_a_none_result_for_a_204():
+    client = FakeLearningServiceClient()
+    client.set_response("DELETE", "/me/notes", None)
+    identity = ActingIdentity(platform="slack", external_id="U000")
+    handler = make_forwarder(client, "DELETE", "/me/notes", resolve_identity=_identity_resolver(identity))
 
-            return _Response()
+    result = handler({}, session_id="sess-1")
 
-    calls = []
-    handler = make_forwarder(RejectingClient(), "POST", "/me/reviews", on_review=lambda *a, **k: calls.append(a))
+    assert isinstance(result, str)
+    assert json.loads(result) is None
 
-    handler(
-        _session_store_with({"id": "person-1", "platform": "slack", "external_id": "U1"}),
-        "sess-1",
-        item_id="lm-1",
-        idempotency_key="key-1",
-        response={"choice": 2},
-    )
 
-    assert calls == []
+def test_friendly_error_path_also_returns_a_json_string():
+    client = FakeLearningServiceClient()
+    client.set_error("GET", "/team/overview", LearningServiceError(403, "not_a_manager", "nope"))
+    identity = ActingIdentity(platform="slack", external_id="U000")
+    handler = make_forwarder(client, "GET", "/team/overview", resolve_identity=_identity_resolver(identity))
+
+    result = handler({}, session_id="sess-1")
+
+    assert isinstance(result, str)
+    assert json.loads(result) == {"error": "that's not something I can show you"}
+
+
+def test_unmapped_error_code_still_raises_not_swallowed_as_a_dict():
+    client = FakeLearningServiceClient()
+    client.set_error("GET", "/me/progress", LearningServiceError(500, "database_unreachable", "boom"))
+    identity = ActingIdentity(platform="slack", external_id="U000")
+    handler = make_forwarder(client, "GET", "/me/progress", resolve_identity=_identity_resolver(identity))
+
+    with pytest.raises(LearningServiceError):
+        handler({}, session_id="sess-1")
+
+
+def test_path_params_are_substituted_and_excluded_from_the_serialized_body():
+    client = FakeLearningServiceClient()
+    client.set_response("DELETE", "/me/notes/abc-123", None)
+    identity = ActingIdentity(platform="slack", external_id="U000")
+    handler = make_forwarder(client, "DELETE", "/me/notes/{id}", resolve_identity=_identity_resolver(identity))
+
+    handler({"id": "abc-123"}, session_id="sess-1")
+
+    call = client.calls[-1]
+    assert call["path"] == "/me/notes/abc-123"
+    assert call["params"] is None
