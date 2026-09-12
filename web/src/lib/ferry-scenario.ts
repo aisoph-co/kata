@@ -16,12 +16,12 @@ export interface FerryPerson {
 }
 
 export const PERSONS: FerryPerson[] = [
-  { id: '1161cf71-d3df-51ce-85dd-7276f0c98dd4', name: 'Quinn Halloran', isOperator: true },
+  { id: '5e648633-33d5-5789-914e-34ad675b96eb', name: 'Quinn Halloran', isOperator: true },
   { id: '07a02952-92f9-5903-82b6-91a7a104e251', name: 'Daniel Okonkwo', isOperator: false },
-  { id: '82f5bb91-d16b-596c-923b-726b9506b463', name: 'Yong Yi Tan', isOperator: false },
-  { id: '0b4b3ee0-5844-5672-80a9-047f3dcc1809', name: 'Shane Delaney', isOperator: false },
+  { id: '55583884-32fd-5088-8be0-300de03f3e12', name: 'Yong Yi Tan', isOperator: false },
+  { id: 'ed7b2f26-9925-54a2-a460-a70289595f56', name: 'Shane Delaney', isOperator: false },
   { id: 'b55b9c1f-bf5a-50fd-b00e-00b73d6823b1', name: 'Mei Lin Chua', isOperator: false },
-  { id: 'bd33e37f-cc6e-537a-99af-e01daae77bea', name: 'Hugo Marchetti', isOperator: false },
+  { id: 'b5c371a1-a791-534b-8035-f0121a33c677', name: 'Hugo Marchetti', isOperator: false },
   { id: '232575fc-3a43-52b1-ac22-3e7d831b4018', name: 'Julian Reyes', isOperator: false },
   { id: '2b82990e-8bac-56b2-8d83-f7e05033d10c', name: 'Victor Almeida', isOperator: false },
   { id: '3daa8b5e-96b0-5193-9451-52bb2a39fc87', name: 'Titus Nakamura', isOperator: false },

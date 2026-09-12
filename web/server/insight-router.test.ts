@@ -36,7 +36,7 @@ describe('classifyIntent', () => {
     assert.equal(intent?.kind, 'person_summary')
     if (intent?.kind === 'person_summary') {
       assert.equal(intent.person.firstName, 'hugo')
-      assert.equal(intent.person.personId, 'bd33e37f-cc6e-537a-99af-e01daae77bea')
+      assert.equal(intent.person.personId, 'b5c371a1-a791-534b-8035-f0121a33c677')
     }
   })
 
