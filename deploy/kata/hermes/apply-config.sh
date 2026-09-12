@@ -73,6 +73,7 @@ set -- \
   'platform_toolsets.discord=["learning","clarify"]' \
   'platform_toolsets.whatsapp_cloud=["learning","clarify"]' \
   'platform_toolsets.signal=["learning","clarify"]' \
+  'platform_toolsets.api_server=["learning","clarify"]' \
   'plugins.enabled=["hermes-kata"]'
 
 for kv in "$@"; do

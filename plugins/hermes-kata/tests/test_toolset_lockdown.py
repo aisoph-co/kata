@@ -129,7 +129,10 @@ def test_every_platform_toolset_is_a_subset_of_learning_clarify_web(config_yaml)
 
 def test_every_learner_facing_platform_from_the_spec_is_covered(config_yaml):
     platforms = set((config_yaml.get("platform_toolsets") or {}).keys())
-    assert platforms == {"slack", "telegram", "discord", "whatsapp_cloud", "signal"}
+    # KATA-14: api_server is the web popup's Hermes surface, locked down
+    # exactly like every other platform (no "web" search toolset — that
+    # stays Slack-only, KATA-15).
+    assert platforms == {"slack", "telegram", "discord", "whatsapp_cloud", "signal", "api_server"}
 
 
 def test_session_pruning_is_on_with_a_short_retention(config_yaml):
@@ -142,7 +145,7 @@ def test_slack_alone_gets_web_search(config_yaml):
     learner-facing platforms stay on {learning, clarify}."""
     platform_toolsets = config_yaml["platform_toolsets"]
     assert "web" in set(platform_toolsets["slack"])
-    for platform in ("telegram", "discord", "whatsapp_cloud", "signal"):
+    for platform in ("telegram", "discord", "whatsapp_cloud", "signal", "api_server"):
         assert "web" not in set(platform_toolsets[platform])
 
 
