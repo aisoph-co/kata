@@ -187,17 +187,19 @@ def test_replay_orders_same_timestamp_reviews_by_id(client, repo):
         }
     )
 
-    # Ids "a" then "b": the order `rebuild_derived_state` sorts the tie into,
-    # so `expected` must be folded the same way.
-    expected = InMemoryLearningRepository()
-    apply_review(
-        expected, person_id="p1", item_id="item-2", concept_id="c1", kind="mcq", rating=3,
-        reviewed_at=parse_reviewed_at(same_instant), review_id="a",
-    )
-    apply_review(
-        expected, person_id="p1", item_id="item-1", concept_id="c1", kind="mcq", rating=3,
-        reviewed_at=parse_reviewed_at(same_instant), review_id="b",
-    )
+    # Ids "a" then "b": the order `rebuild_derived_state` sorts the tie into
+    # — build `expected` the same way `/admin/replay` itself does (a full
+    # rebuild from the logged rows), not by chaining bare `apply_review`
+    # calls: those don't append to the log, so a fold triggered by this
+    # very same timestamp tie (see `engine/replay.py`) would have nothing
+    # to read `expected`'s history from.
+    expected = _seed_repo()
+    expected.add_item(Item(id="item-2", concept_id="c1", kind="mcq", prompt="?", payload={"correct_index": 0}))
+    _log(expected, person_id="p1", item_id="item-1", reviewed_at=same_instant, rating=3)
+    expected.reviews[-1]["id"] = "b"
+    _log(expected, person_id="p1", item_id="item-2", reviewed_at=same_instant, rating=3)
+    expected.reviews[-1]["id"] = "a"
+    rebuild_derived_state(expected)
 
     r = client.post("/admin/replay", headers=AUTH)
     assert r.status_code == 200
@@ -332,6 +334,48 @@ def test_apply_review_out_of_order_matches_rebuild_derived_state():
     expected_repo.reviews[-1]["id"] = "later-review"
     _log(expected_repo, person_id="p1", item_id="item-1", reviewed_at="2026-08-01T00:00:00Z", rating=1)
     expected_repo.reviews[-1]["id"] = "earlier-review"
+    rebuild_derived_state(expected_repo)
+
+    assert new_card == expected_repo.card_states[("p1", "item-1")]
+    assert new_concept_state == expected_repo.concept_states[("p1", "c1")]
+
+
+def test_apply_review_equal_timestamp_ties_break_by_id_not_arrival_order():
+    """KAT-X4 regression (AE Reviewer, `Verdict: fix`): two *live* reviews
+    sharing the exact same `reviewed_at` must fold in `(reviewed_at, id)`
+    order — the same tie-break `rebuild_derived_state` uses — regardless of
+    which one happened to arrive (and get applied) first. A strict `<` in
+    `apply_review`'s out-of-order check let an equal-timestamp collision
+    fall through to the O(1) incremental branch, which applies purely in
+    arrival order; this pins the fix (`<=`) against a case where arrival
+    order ("z" then "a") is the reverse of id order.
+    """
+    repo = _seed_repo()
+    same_instant = parse_reviewed_at("2026-08-15T00:00:00Z")
+
+    # Arrives first: review_id "z", lexicographically *after* "a".
+    apply_review(
+        repo, person_id="p1", item_id="item-1", concept_id="c1", kind="mcq", rating=4,
+        reviewed_at=same_instant, review_id="z",
+    )
+    _log(repo, person_id="p1", item_id="item-1", reviewed_at="2026-08-15T00:00:00Z", rating=4)
+    repo.reviews[-1]["id"] = "z"
+
+    # Arrives second: review_id "a" — same instant, but sorts *before* "z".
+    new_card, new_concept_state = apply_review(
+        repo, person_id="p1", item_id="item-1", concept_id="c1", kind="mcq", rating=1,
+        reviewed_at=same_instant, review_id="a",
+    )
+    _log(repo, person_id="p1", item_id="item-1", reviewed_at="2026-08-15T00:00:00Z", rating=1)
+    repo.reviews[-1]["id"] = "a"
+
+    # The canonical order a full replay would use is by id ("a" then "z"),
+    # the reverse of arrival order — build the expected state that way.
+    expected_repo = _seed_repo()
+    _log(expected_repo, person_id="p1", item_id="item-1", reviewed_at="2026-08-15T00:00:00Z", rating=4)
+    expected_repo.reviews[-1]["id"] = "z"
+    _log(expected_repo, person_id="p1", item_id="item-1", reviewed_at="2026-08-15T00:00:00Z", rating=1)
+    expected_repo.reviews[-1]["id"] = "a"
     rebuild_derived_state(expected_repo)
 
     assert new_card == expected_repo.card_states[("p1", "item-1")]

@@ -42,15 +42,20 @@ def _fold_card_state(
     `rebuild_derived_state`'s sort key, so a fake tiebreak here would sort
     this review differently than a later `/admin/replay` will.
 
-    Precondition: `review_id` is not yet in `repo.all_reviews()` — the caller
-    (`apply_review`) always runs before the review is appended to the log,
-    live or replayed; asserted below rather than silently double-counting it.
+    `review_id` may or may not already be among `repo.all_reviews()`: a live
+    submission (`POST /me/reviews`) calls this before its review is
+    appended to the log, so it supplies an entry no row yet has; `POST
+    /admin/replay` (`rebuild_derived_state`, below) calls this while
+    iterating the log it is rebuilding *from*, so the review is always
+    already a row. Either way this must fold in exactly one entry per
+    review — never zero (a live tie silently dropped) and never two (the
+    same review double-counted during replay, which used to raise instead;
+    KAT-X4 regression, AE Reviewer `Verdict: fix`).
     """
     rows = [r for r in repo.all_reviews() if r["person_id"] == person_id and r["item_id"] == item_id]
-    if any(str(r.get("id", "")) != "" and str(r.get("id", "")) == review_id for r in rows):
-        raise ValueError(f"review {review_id!r} is already in the log; apply_review must run before it is appended")
     entries = [(parse_reviewed_at(r["reviewed_at"]), str(r.get("id", "")), r["rating"]) for r in rows]
-    entries.append((reviewed_at, review_id, rating))
+    if not any(entry_id == review_id for _, entry_id, _ in entries):
+        entries.append((reviewed_at, review_id, rating))
     entries.sort(key=lambda e: (e[0], e[1]))
 
     card: CardState | None = None
@@ -73,7 +78,8 @@ def _fold_concept_state(
     update is sequential too, so an out-of-order insert needs every review
     on record for this concept (across all its items) re-folded in order,
     not just appended on top of the current snapshot. Same `review_id`
-    and not-yet-logged precondition as `_fold_card_state`."""
+    may-or-may-not-already-be-logged handling as `_fold_card_state` — see
+    its docstring."""
     rows = []
     for r in repo.all_reviews():
         if r["person_id"] != person_id:
@@ -81,10 +87,9 @@ def _fold_concept_state(
         item = repo.get_item(r["item_id"])
         if item is not None and item.concept_id == concept_id:
             rows.append(r)
-    if any(str(r.get("id", "")) != "" and str(r.get("id", "")) == review_id for r in rows):
-        raise ValueError(f"review {review_id!r} is already in the log; apply_review must run before it is appended")
     entries = [(parse_reviewed_at(r["reviewed_at"]), str(r.get("id", "")), r["rating"], r["kind"]) for r in rows]
-    entries.append((reviewed_at, review_id, rating, kind))
+    if not any(entry_id == review_id for _, entry_id, _, _ in entries):
+        entries.append((reviewed_at, review_id, rating, kind))
     entries.sort(key=lambda e: (e[0], e[1]))
 
     p_known = P_INIT
@@ -114,18 +119,24 @@ def apply_review(
     # A live review is normally the newest one for its item/concept (server
     # time only moves forward), so the incremental update below — apply on
     # top of the current snapshot — matches a full chronological rebuild by
-    # construction. That assumption breaks when the review log already has a
-    # *later* `reviewed_at` on record for this item/concept (e.g. seeded
-    # history dated after the live submission's wall-clock time): folding on
-    # top would silently rewrite the wrong (earlier) end of the timeline.
-    # Detect that case and re-derive the state from the full ordered history
-    # instead — the same fold `/admin/replay` does, just scoped to the one
-    # item/concept an out-of-order insert can affect, so it stays exact
-    # without a full-repository rebuild on every request.
+    # construction. That assumption breaks two ways: (1) the review log
+    # already has a *later* `reviewed_at` on record for this item/concept
+    # (e.g. seeded history dated after the live submission's wall-clock
+    # time) — folding on top would silently rewrite the wrong (earlier) end
+    # of the timeline; (2) an *equal* `reviewed_at` is on record — the
+    # canonical order `rebuild_derived_state` uses is `(reviewed_at, id)`,
+    # so which of two same-instant reviews comes first depends on `id`, not
+    # on which one happened to be applied first live. Using `<=` (not `<`)
+    # below routes both cases through the same full-history fold `/admin/
+    # replay` does, just scoped to the one item/concept an out-of-order or
+    # tied insert can affect, so it stays exact without a full-repository
+    # rebuild on every request. (KAT-X4 regression: two live reviews sharing
+    # a `reviewed_at` whose `id` order differs from arrival order used to
+    # diverge from replay under a strict `<`.)
     if (
         existing_card is not None
         and existing_card.last_review_at is not None
-        and reviewed_at < existing_card.last_review_at
+        and reviewed_at <= existing_card.last_review_at
     ):
         new_card = _fold_card_state(repo, person_id, item_id, rating, reviewed_at, review_id)
     else:
@@ -136,7 +147,7 @@ def apply_review(
     if (
         existing_concept_state is not None
         and existing_concept_state.last_review_at is not None
-        and reviewed_at < existing_concept_state.last_review_at
+        and reviewed_at <= existing_concept_state.last_review_at
     ):
         new_concept_state = _fold_concept_state(repo, person_id, concept_id, kind, rating, reviewed_at, review_id)
     else:
