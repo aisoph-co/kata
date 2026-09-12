@@ -8,12 +8,19 @@ set -euo pipefail
 
 PLATFORMS=(slack telegram discord whatsapp_cloud signal)
 
+# Model. The image ships provider `auto`, which reaches for an Anthropic key
+# the Kata services do not carry — the only key on the service is
+# OPENROUTER_API_KEY, so name the provider instead of letting it guess.
+hermes config set model.provider openrouter
+hermes config set model.default "${HERMES_MODEL:-openai/gpt-5.6-luna}"
+
 # Instance-level guardrails. One Hermes instance, one purpose (Kata) — no
 # other tenant to carve a per-platform exception for.
 hermes config set memory.memory_enabled false
 hermes config set memory.user_profile_enabled false
 hermes config set security.redact_secrets true
 hermes config set terminal.backend modal
+hermes config set terminal.modal_mode direct
 
 # Short transcript retention: the learner's real answer text and grades
 # live in the learning service's own answer/review tables under the core's
