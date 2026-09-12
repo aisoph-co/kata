@@ -40,7 +40,13 @@ try:
     from .hermes_kata.mcq import register_mcq_rendering_section
     from .hermes_kata.quiz import ensure_quiz_thread_identity
     from .hermes_kata.team_reveal import register_team_reveal
-    from .hermes_kata.tools import JobIdentityRegistry, job_identities_from_env, make_identity_resolver, register_tools
+    from .hermes_kata.tools import (
+        JobIdentityRegistry,
+        cron_job_deliver_lookup,
+        job_identities_from_env,
+        make_identity_resolver,
+        register_tools,
+    )
 except ImportError:
     from hermes_kata.client import LearningServiceClient
     from hermes_kata.digest import create_digest_jobs, load_digest_roster, team_recipient_from_env
@@ -49,7 +55,13 @@ except ImportError:
     from hermes_kata.mcq import register_mcq_rendering_section
     from hermes_kata.quiz import ensure_quiz_thread_identity
     from hermes_kata.team_reveal import register_team_reveal
-    from hermes_kata.tools import JobIdentityRegistry, job_identities_from_env, make_identity_resolver, register_tools
+    from hermes_kata.tools import (
+        JobIdentityRegistry,
+        cron_job_deliver_lookup,
+        job_identities_from_env,
+        make_identity_resolver,
+        register_tools,
+    )
 
 
 def register(ctx: Any) -> None:
@@ -64,7 +76,18 @@ def register(ctx: Any) -> None:
     # gets a chance to run.
     for _name, _identity in job_identities_from_env(os.environ.get("KATA_JOB_IDENTITIES")).items():
         job_identities.set(_name, _identity)
-    resolve_identity = make_identity_resolver(cache, job_identities, store_handle)
+    # KATA-24 fix round 4: a job neither this plugin nor KATA_JOB_IDENTITIES
+    # ever named (made directly against Hermes's cron API) still has its own
+    # `deliver` target recorded in the cron job store — read it back via the
+    # job id recovered from the cron-triggered turn's own session id, rather
+    # than the job *name* rounds 2/3 keyed on (Hermes's tool dispatch never
+    # actually delivers a job name to a plugin handler — see
+    # `tools.cron_job_id_from_session_id`). No `ctx.cron` dependency: this
+    # plugin runs in-process with Hermes, so the lookup imports `cron.jobs`
+    # directly.
+    resolve_identity = make_identity_resolver(
+        cache, job_identities, store_handle, job_deliver_lookup=cron_job_deliver_lookup()
+    )
 
     register_identity_hook(ctx, client, cache, store_handle)
     register_tools(ctx, client, resolve_identity=resolve_identity)

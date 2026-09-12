@@ -131,15 +131,61 @@ def job_identities_from_env(raw: Optional[str]) -> dict[str, ActingIdentity]:
     return identities
 
 
+
+# `cron/scheduler.py` builds a cron-triggered turn's session id as
+# `f"cron_{job_id}_{timestamp:%Y%m%d_%H%M%S}"` (confirmed against a live
+# `hermes-day`, 2026-09-12: every cron turn's `agent.log` line carries
+# `session=cron_<job id>_<timestamp>`) — the same prefix Hermes's own
+# `hermes_state_portability.py` relies on (`f"cron_{job_id}_"`), so this is a
+# supported convention, not an incidental string we're scraping. `job_id` is
+# the scheduler's 12-hex-char id (`cron/jobs.py`'s `uuid.uuid4().hex[:12]`),
+# but matched loosely here in case that width ever changes upstream.
+_CRON_SESSION_ID = re.compile(r"^cron_([0-9a-f]+)_\d{8}_\d{6}$")
+
+
+def cron_job_id_from_session_id(session_id: Optional[str]) -> Optional[str]:
+    """Recover a cron job's own id from the session id a cron-triggered turn
+    actually carries (KATA-24 fix round 4). Rounds 2/3 both keyed their
+    fallback off `job_name`, passed into `make_forwarder`'s handler via
+    `kwargs.get("job_name")` — but Hermes's tool dispatch
+    (`model_tools.py`'s `dispatch_kwargs`, confirmed against the public
+    `hermes-agent` source) only ever forwards `task_id`/`session_id` to a
+    plugin tool handler, never `job_name`. That made every prior fix
+    structurally unreachable: `job_name` is `None` at the real call site on
+    every cron run, group-chat or DM alike (confirmed live against
+    `hermes-day`'s `agent.log`: every learning-tool call from a cron turn
+    raises "no bound identity", regardless of job shape). `session_id` is
+    the one identifier that's actually delivered, so this is the fallback
+    that can actually fire.
+    """
+    if not session_id:
+        return None
+    match = _CRON_SESSION_ID.match(session_id)
+    return match.group(1) if match else None
+
+
 def make_identity_resolver(
-    session_cache: SessionIdentityCache, job_identities: JobIdentityRegistry, store_handle: SessionStoreHandle
+    session_cache: SessionIdentityCache,
+    job_identities: JobIdentityRegistry,
+    store_handle: SessionStoreHandle,
+    *,
+    job_deliver_lookup: Optional[Callable[[str], Optional[Mapping[str, str]]]] = None,
 ) -> Callable[..., ActingIdentity]:
     """Resolution order for a tool call (spec §1/§2): `session_id` ->
     `lookup_by_session_id` -> session key -> plugin cache ->
     `session_store.get_session_metadata` (a session that outlived the plugin
-    cache, e.g. a reload) -> the cron job it was scheduled by -> raise. A
-    session reset changes `session_id` but keeps `session_key`, so it still
-    resolves via the same cache/metadata entry.
+    cache, e.g. a reload) -> the cron job it was scheduled by, from
+    `job_identities` (this plugin's own registrations plus `KATA_JOB_
+    IDENTITIES`, keyed by job *name*) -> the same registry keyed by the job
+    *id* recovered from `session_id` (`cron_job_id_from_session_id`) ->
+    `job_deliver_lookup` against that id, the cron job's own durably
+    recorded `deliver` target (KATA-24 fix round 4 — a job neither this
+    plugin nor deploy config ever registered still carries its own
+    `deliver` string there) -> raise. A session reset changes `session_id`
+    but keeps `session_key`, so it still resolves via the same
+    cache/metadata entry. A resolved `job_deliver_lookup` hit is cached
+    into `job_identities` (keyed by job id) so only the first tool call on
+    a given job pays for the lookup.
     """
 
     def resolve(*, session_id: Optional[str] = None, job_name: Optional[str] = None, **_: Any) -> ActingIdentity:
@@ -157,12 +203,74 @@ def make_identity_resolver(
         identity = job_identities.get(job_name)
         if identity is not None:
             return identity
+        job_id = cron_job_id_from_session_id(session_id)
+        identity = job_identities.get(job_id)
+        if identity is not None:
+            return identity
+        if job_deliver_lookup is not None:
+            for key in (job_name, job_id):
+                if not key:
+                    continue
+                recipient = job_deliver_lookup(key)
+                if recipient is not None:
+                    identity = ActingIdentity(platform=recipient["platform"], external_id=recipient["external_id"])
+                    job_identities.set(key, identity)
+                    return identity
         raise LookupError(
             "hermes-kata: no bound identity for this tool call — "
             "neither an active session nor a known cron job"
         )
 
     return resolve
+
+
+def cron_job_deliver_lookup(
+    get_job: Optional[Callable[[str], Any]] = None,
+) -> Callable[[str], Optional[Mapping[str, str]]]:
+    """`job_deliver_lookup` (`make_identity_resolver`, above): best-effort
+    `job_id -> {"platform", "external_id"}` over a cron job's own persisted
+    `deliver` string (KATA-24 fix round 4).
+
+    Round 3 assumed a `ctx.cron.jobs.get_job` facade and a `recipient` dict
+    on the job record. Neither exists: `PluginContext`
+    (`hermes-agent`'s `hermes_cli/plugins.py`) has no `.cron` attribute at
+    all — confirmed against the public upstream source — so that fallback
+    was dead code regardless of the `get_job` signature question it was
+    flagged with. `cron.jobs.create_job`'s real persisted shape only ever
+    writes `deliver`, a plain `"platform:external_id"` string
+    (`cron/jobs.py`), never a `recipient` mapping.
+
+    This plugin loads in-process with Hermes (`__init__.py`'s own
+    docstring: the loader `exec`s this file, it doesn't subprocess it), so
+    it can read the job store directly — `import cron.jobs` — instead of
+    going through `ctx`. `get_job` defaults to that module's `get_job(job_id)`
+    (looked up by id this time, not name — matches the real signature),
+    lazily imported so a test double can inject a fake via the `get_job`
+    param and an environment without `cron.jobs` on `sys.path` degrades to
+    `None` rather than raising.
+    """
+
+    def _default_get_job(job_id: str) -> Optional[Mapping[str, Any]]:
+        from cron.jobs import get_job as _get_job  # in-process import; see above
+
+        return _get_job(job_id)
+
+    resolver = get_job or _default_get_job
+
+    def lookup(job_id: str) -> Optional[Mapping[str, str]]:
+        try:
+            job = resolver(job_id)
+        except Exception:  # noqa: BLE001 - best-effort, spec KATA-31
+            return None
+        deliver = job.get("deliver") if isinstance(job, Mapping) else getattr(job, "deliver", None)
+        if not isinstance(deliver, str):
+            return None
+        platform, sep, external_id = deliver.partition(":")
+        if not sep or not platform or not external_id:
+            return None
+        return {"platform": platform, "external_id": external_id}
+
+    return lookup
 
 
 def make_forwarder(

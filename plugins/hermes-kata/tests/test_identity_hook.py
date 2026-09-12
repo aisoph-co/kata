@@ -21,7 +21,13 @@ from hermes_kata.identity import (
     make_bind_identity,
 )
 from hermes_kata.client import ActingIdentity
-from hermes_kata.tools import JobIdentityRegistry, job_identities_from_env, make_identity_resolver
+from hermes_kata.tools import (
+    JobIdentityRegistry,
+    cron_job_deliver_lookup,
+    cron_job_id_from_session_id,
+    job_identities_from_env,
+    make_identity_resolver,
+)
 
 
 def _event(platform="slack", user_id="U42"):
@@ -264,3 +270,92 @@ def test_job_identities_from_env_feeds_the_registry_the_resolver_reads():
     identity = resolver(session_id=None, job_name="kata-demo-quiz-B-C0BVDPW43PE")
 
     assert identity == ActingIdentity(platform="slack", external_id="C0BVDPW43PE")
+
+
+# --- KATA-24 fix round 4: job_name never reaches a plugin tool handler in --
+# --- production (Hermes's tool dispatch only ever forwards task_id/       --
+# --- session_id) — recover the job's own id from the cron session id      --
+# --- instead, and read its `deliver` target back from the cron job store. -
+
+
+def test_cron_job_id_from_session_id_parses_the_scheduler_shape():
+    # cron/scheduler.py: f"cron_{job_id}_{timestamp:%Y%m%d_%H%M%S}" —
+    # confirmed live against hermes-day's agent.log.
+    assert cron_job_id_from_session_id("cron_0e771dbadf60_20260912_083307") == "0e771dbadf60"
+    assert cron_job_id_from_session_id("cron_c8b27bbaf683_20260912_083318") == "c8b27bbaf683"
+
+
+def test_cron_job_id_from_session_id_is_none_for_anything_else():
+    assert cron_job_id_from_session_id(None) is None
+    assert cron_job_id_from_session_id("") is None
+    assert cron_job_id_from_session_id("not-a-cron-session") is None
+    # A live/interactive session id must never be misread as a job id.
+    assert cron_job_id_from_session_id("slack:C0C10B1KHHP:1699999999.000100") is None
+
+
+def test_cron_job_deliver_lookup_resolves_from_the_jobs_own_deliver_field():
+    fake_jobs = {"0e771dbadf60": {"id": "0e771dbadf60", "deliver": "slack:C0C10B1KHHP"}}
+    lookup = cron_job_deliver_lookup(get_job=fake_jobs.get)
+
+    assert lookup("0e771dbadf60") == {"platform": "slack", "external_id": "C0C10B1KHHP"}
+
+
+def test_cron_job_deliver_lookup_degrades_to_none_rather_than_raising():
+    def _boom(job_id):
+        raise RuntimeError("cron.jobs not importable in this environment")
+
+    assert cron_job_deliver_lookup(get_job=_boom)("anything") is None
+    assert cron_job_deliver_lookup(get_job=lambda job_id: None)("missing") is None
+    assert cron_job_deliver_lookup(get_job=lambda job_id: {"deliver": "local"})("x") is None
+    assert cron_job_deliver_lookup(get_job=lambda job_id: {"deliver": ""})("x") is None
+    assert cron_job_deliver_lookup(get_job=lambda job_id: {})("x") is None
+
+
+def test_resolver_falls_back_to_deliver_lookup_via_job_id_from_session_id():
+    # End to end, against the exact live-reported shape (KATA-24): a job
+    # neither `JobIdentityRegistry` nor `KATA_JOB_IDENTITIES` ever named,
+    # with no `job_name` reaching the handler (production reality) but a
+    # real cron-scheduler session id.
+    fake_jobs = {"0e771dbadf60": {"id": "0e771dbadf60", "deliver": "slack:C0C10B1KHHP"}}
+    resolver = make_identity_resolver(
+        SessionIdentityCache(),
+        JobIdentityRegistry(),
+        SessionStoreHandle(),
+        job_deliver_lookup=cron_job_deliver_lookup(get_job=fake_jobs.get),
+    )
+
+    identity = resolver(session_id="cron_0e771dbadf60_20260912_083307", job_name=None)
+
+    assert identity == ActingIdentity(platform="slack", external_id="C0C10B1KHHP")
+
+
+def test_resolver_caches_the_deliver_lookup_hit_so_only_the_first_call_pays():
+    calls = []
+
+    def _get_job(job_id):
+        calls.append(job_id)
+        return {"deliver": "slack:C0C10B1KHHP"}
+
+    registry = JobIdentityRegistry()
+    resolver = make_identity_resolver(
+        SessionIdentityCache(), registry, SessionStoreHandle(),
+        job_deliver_lookup=cron_job_deliver_lookup(get_job=_get_job),
+    )
+    session_id = "cron_0e771dbadf60_20260912_083307"
+
+    first = resolver(session_id=session_id, job_name=None)
+    second = resolver(session_id=session_id, job_name=None)
+
+    assert first == second == ActingIdentity(platform="slack", external_id="C0C10B1KHHP")
+    assert calls == ["0e771dbadf60"]  # only the first call actually looked it up
+    assert registry.get("0e771dbadf60") == ActingIdentity(platform="slack", external_id="C0C10B1KHHP")
+
+
+def test_resolver_still_raises_when_neither_job_name_nor_session_id_resolve():
+    resolver = make_identity_resolver(
+        SessionIdentityCache(), JobIdentityRegistry(), SessionStoreHandle(),
+        job_deliver_lookup=cron_job_deliver_lookup(get_job=lambda job_id: None),
+    )
+
+    with pytest.raises(LookupError):
+        resolver(session_id="cron_deadbeef0000_20260912_083307", job_name=None)
