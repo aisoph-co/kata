@@ -124,6 +124,22 @@ def test_person_with_no_role_sees_every_topic(client, curriculum):
     assert slugs == {"pm-topic", "tl-topic"}
 
 
+def test_all_roles_true_bypasses_the_role_filter_for_any_caller(client, curriculum):
+    """KATA-7/W3: the Connections screen shows persona topic cards across
+    roles on one signed-in learner's own screen, so a role-bearing caller
+    has to be able to opt out of the default per-role filter."""
+    r = client.get("/topics?all_roles=true", headers={**TOKEN_HEADER, "X-Acting-Identity": "slack:shane"})
+    assert r.status_code == 200
+    slugs = {t["slug"] for t in r.json()["topics"]}
+    assert slugs == {"pm-topic", "tl-topic"}
+
+
+def test_all_roles_false_is_the_same_as_omitting_it(client, curriculum):
+    r = client.get("/topics?all_roles=false", headers={**TOKEN_HEADER, "X-Acting-Identity": "slack:shane"})
+    assert r.status_code == 200
+    assert [t["slug"] for t in r.json()["topics"]] == ["pm-topic"]
+
+
 def test_topics_carry_their_source_citations(client, curriculum):
     """KAT-C2: a topic has to say which issue or file put it on the list —
     `GET /topics` is where Screen 2 reads that from."""
