@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .catalog import register_tools
 from .client import LearningServiceClient
+from .guardrails import register_guardrail_prompt
 from .identity import make_pre_gateway_dispatch
 from .prompts import register_item_rendering_prompt
 
@@ -19,3 +20,4 @@ def register(ctx) -> None:
     register_tools(ctx, client)
     ctx.register_hook("pre_gateway_dispatch", make_pre_gateway_dispatch(client))
     register_item_rendering_prompt(ctx)
+    register_guardrail_prompt(ctx)
