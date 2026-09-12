@@ -339,7 +339,7 @@ def test_other_is_not_a_role(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_subtree_includes_only_transitive_reports(client, session: AsyncSession):
+async def test_subtree_includes_the_person_and_transitive_reports(client, session: AsyncSession):
     client.post(
         "/admin/roster/import",
         headers=AUTH,
@@ -358,11 +358,15 @@ async def test_subtree_includes_only_transitive_reports(client, session: AsyncSe
         by_email[email] = result.scalar_one()
 
     subtree = await get_subtree_ids(session, by_email["root@example.com"].id)
-    assert set(subtree) == {by_email["mid@example.com"].id, by_email["leaf@example.com"].id}
+    assert set(subtree) == {
+        by_email["root@example.com"].id,
+        by_email["mid@example.com"].id,
+        by_email["leaf@example.com"].id,
+    }
     assert by_email["outsider@example.com"].id not in subtree
 
-    # A leaf with no reports has an empty subtree and is not a manager.
-    assert await get_subtree_ids(session, by_email["leaf@example.com"].id) == []
+    # A leaf with no reports has a subtree of just themselves, and is not a manager.
+    assert await get_subtree_ids(session, by_email["leaf@example.com"].id) == [by_email["leaf@example.com"].id]
     assert await is_manager(session, by_email["leaf@example.com"].id) is False
     assert await is_manager(session, by_email["mid@example.com"].id) is True
     assert await is_manager(session, by_email["root@example.com"].id) is True
