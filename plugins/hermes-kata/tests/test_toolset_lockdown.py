@@ -135,3 +135,18 @@ def test_every_learner_facing_platform_from_the_spec_is_covered(config_yaml):
 def test_session_pruning_is_on_with_a_short_retention(config_yaml):
     assert config_yaml["sessions"]["auto_prune"] is True
     assert config_yaml["sessions"]["retention_days"] <= 14
+
+
+def test_slack_alone_gets_web_search(config_yaml):
+    """KATA-15: the Slack bot may check content freshness; the other four
+    learner-facing platforms stay on {learning, clarify}."""
+    platform_toolsets = config_yaml["platform_toolsets"]
+    assert "web" in set(platform_toolsets["slack"])
+    for platform in ("telegram", "discord", "whatsapp_cloud", "signal"):
+        assert "web" not in set(platform_toolsets[platform])
+
+
+def test_web_search_is_pinned_to_the_exa_backend(config_yaml):
+    """Without this, Hermes falls back to its keyless free tier and the
+    EXA_API_KEY on this service is never used."""
+    assert config_yaml["web"]["backend"] == "exa"

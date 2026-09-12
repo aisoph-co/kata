@@ -12,11 +12,14 @@
 #
 # sessions.* / platform_toolsets.* below are the Hermes surface spec's
 # toolset lockdown (docs/superpowers/specs/2026-09-06-hermes-surface-spec.md
-# §5): every learner-facing platform gets exactly {learning, clarify} (no
-# "web" here — none of the five needs content-freshness checks for the demo)
-# and nothing else, and sessions are pruned after 14 days instead of the
-# 90-day default. plugins/hermes-kata/tests/test_toolset_lockdown.py parses
-# this file and asserts the property statically, without a live Hermes.
+# §5): every learner-facing platform gets {learning, clarify} and nothing
+# else, and sessions are pruned after 14 days instead of the 90-day default.
+# KATA-15 adds "web" for slack only — the one platform where a learner asks
+# about something newer than the seeded sources. web.backend=exa points that
+# toolset at Exa's keyed SDK (EXA_API_KEY, a Railway secret on this service)
+# instead of Hermes' anonymous, rate-limited keyless tier.
+# plugins/hermes-kata/tests/test_toolset_lockdown.py runs this file against a
+# stubbed `hermes` and asserts the property, without a live Hermes.
 set -eu
 
 BACKEND="${TERMINAL_BACKEND:-modal}"
@@ -43,7 +46,8 @@ set -- \
   "security.redact_secrets=true" \
   "sessions.auto_prune=true" \
   "sessions.retention_days=14" \
-  'platform_toolsets.slack=["learning","clarify"]' \
+  "web.backend=exa" \
+  'platform_toolsets.slack=["learning","clarify","web"]' \
   'platform_toolsets.telegram=["learning","clarify"]' \
   'platform_toolsets.discord=["learning","clarify"]' \
   'platform_toolsets.whatsapp_cloud=["learning","clarify"]' \
