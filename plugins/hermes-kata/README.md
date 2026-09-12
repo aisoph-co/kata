@@ -24,6 +24,25 @@ Spec: `docs/superpowers/specs/2026-09-06-hermes-surface-spec.md` in
   system-prompt rules that state them; `tests/test_guardrails.py` runs the
   five guardrail assertions against a seeded transcript until KAT-X3's
   real eval set (AGCTM-16) lands.
+- `hermes_kata/digests.py` — issue G1: plans and (idempotently, by `name`)
+  creates the digest cron jobs — one due-rep job per person with a
+  resolvable chat id, one team-quiz job (the only kind that also carries
+  `clarify`), one teach-back job.
+- `hermes_kata/quiz.py` — issue G1: plans the daily team-quiz post
+  (confidence picker, then each item, both via `clarify`; the source chip;
+  the live "N of 9 answered" line) and tracks which item ids are today's
+  round, so a resolved answer to one of them is written `source =
+  slack_thread` (`forwarder.py`'s `is_quiz_item` hook).
+- `hermes_kata/reveal.py` — issue G1 (AGCTM-69): tallies resolved answers
+  per (item, option) — counts only, never who picked what — credits a
+  correct answerer by name, and renders the on-demand reveal.
+- `hermes_kata/commands.py` — issue G1's real entry points: registers
+  `sync_digest_jobs`, `post_team_quiz`, and `reveal_team_quiz` as ordinary
+  Hermes tools (the only extension point `PluginContext` actually offers —
+  there is no command-registration hook), plus the system-prompt
+  instruction that routes `/kata-sync-digests <channel>` and `/kata-reveal
+  <item-id>...` to them, the same "no new rendering code" pattern
+  `prompts.py` uses for `mcq`/`msq`.
 
 Toolset lockdown and session pruning are config, not code: see
 `deploy/kata/apply-config.sh`.
