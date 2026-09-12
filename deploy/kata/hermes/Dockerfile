@@ -42,8 +42,32 @@ COPY deploy/kata/hermes/apply-config.sh /opt/kata/apply-config.sh
 COPY --chmod=755 deploy/kata/hermes/apply-config.sh /etc/cont-init.d/49-apply-kata-config
 COPY --chmod=755 deploy/kata/hermes/sync-kata-plugin.sh /etc/cont-init.d/50-sync-kata-plugin
 
-# Everything else (config.yaml, .env, sessions, cron state) lives on the
-# /opt/data volume; see ../README.md and apply-config.sh.
+# hermes-webui (KATA-17): browser UI for this exact Hermes instance — same
+# config.yaml, sessions, and hermes-kata plugin the gateway and CLI use, no
+# terminal needed. Pinned to a commit, not a moving tag, so a Kata deploy
+# never picks up an unreviewed upstream change; bump deliberately.
+# All its heavy deps (openai, httpx, ...) are the agent's own — already in
+# /opt/hermes/.venv — so only its two small standalone deps need adding.
+ARG HERMES_WEBUI_REF=52bcfa3cb989fbd3f50378394962310e98374f7d
+RUN git clone https://github.com/nesquena/hermes-webui /opt/kata/hermes-webui \
+    && cd /opt/kata/hermes-webui \
+    && git checkout "${HERMES_WEBUI_REF}" \
+    && rm -rf .git \
+    && uv pip install --python /opt/hermes/.venv/bin/python -r requirements.txt
+
+# Register hermes-webui as an s6-rc longrun service alongside the gateway
+# (modelled on the base image's own ./s6-rc.d/dashboard) instead of touching
+# CMD — see the Railway start-command gotcha in ../README.md. `user` is the
+# bundle s6 actually starts (../../docker/s6-rc.d/user/contents.d/*).
+RUN mkdir -p /etc/s6-overlay/s6-rc.d/hermes-webui/dependencies.d \
+    && echo longrun > /etc/s6-overlay/s6-rc.d/hermes-webui/type \
+    && touch /etc/s6-overlay/s6-rc.d/hermes-webui/dependencies.d/base \
+    && touch /etc/s6-overlay/s6-rc.d/user/contents.d/hermes-webui
+COPY --chmod=755 deploy/kata/hermes/hermes-webui-run.sh /etc/s6-overlay/s6-rc.d/hermes-webui/run
+
+# Everything else (config.yaml, .env, sessions, cron state, and hermes-webui's
+# own state under webui/) lives on the /opt/data volume; see ../README.md,
+# apply-config.sh, and hermes-webui-run.sh.
 
 # Run the gateway by default (the upstream image's empty CMD starts the
 # interactive CLI). The image ENTRYPOINT dispatcher stays in place; under a
