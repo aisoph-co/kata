@@ -1,8 +1,5 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-
-vi.mock('@/lib/auth-config', () => ({ AUTH_ENABLED: true }))
-
 import { useE2ESession } from './useE2ESession'
 
 describe('useE2ESession', () => {

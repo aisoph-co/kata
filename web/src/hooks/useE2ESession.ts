@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { AUTH_ENABLED } from '@/lib/auth-config'
 
 /** What `/__e2e/session` grants: the seed learner this browser may act as. */
 export interface E2ESession {
@@ -12,24 +11,21 @@ interface E2EState {
 }
 
 /**
- * Finding #5 (AGCTM-64): the e2e auth bypass, read once per page load and
- * only when Screen 1's real gate is on (`AUTH_ENABLED`). The decision is
- * always the server's, never this code's: Caddy (prod) / the Vite dev
- * plugin (`vite.config.ts`) answer 200 + the learner email only when the
- * deployment has `E2E_AUTH_BYPASS_TOKEN` set and the request carried it —
- * the test runner attaches it as an extra header on every request the
- * browser makes. A 404 (variable unset, wrong token, no header) or any
- * failure means "no bypass," and the normal Auth0 path runs unchanged.
+ * Finding #5 (AGCTM-64): the e2e auth bypass, read once per page load.
+ * Checked unconditionally — independent of whether an Auth0 tenant is
+ * configured for this deployment (`AUTH_ENABLED`), since a test/CI
+ * deployment may set `E2E_AUTH_BYPASS_TOKEN` with no tenant to log into at
+ * all. The decision is always the server's, never this code's: Caddy
+ * (prod) / the Vite dev plugin (`vite.config.ts`) answer 200 + the learner
+ * email only when the deployment has `E2E_AUTH_BYPASS_TOKEN` set and the
+ * request carried it — the test runner attaches it as an extra header on
+ * every request the browser makes. A 404 (variable unset, wrong token, no
+ * header) or any failure means "no bypass."
  */
 export function useE2ESession(): E2EState {
-  const [state, setState] = useState<E2EState>({ data: null, isPending: AUTH_ENABLED })
+  const [state, setState] = useState<E2EState>({ data: null, isPending: true })
 
   useEffect(() => {
-    if (!AUTH_ENABLED) {
-      setState({ data: null, isPending: false })
-      return
-    }
-
     let cancelled = false
     fetch('/__e2e/session')
       .then(async (res) => {

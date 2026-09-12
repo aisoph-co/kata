@@ -1,5 +1,3 @@
-import { useAuth0 } from '@auth0/auth0-react'
-
 /**
  * Screen 2's failure path B: this person resolved fine (Screen 1 passed)
  * but has no `role` on record — a roster import (contract change #8) that
@@ -7,10 +5,12 @@ import { useAuth0 } from '@auth0/auth0-react'
  * confirm — a fixed, explicit prompt, and the app never renders past this
  * until a roster re-import sets the role. Shaped like `SignInRefused`, but
  * this is a role gap, not an identity one.
+ *
+ * Reachable from the e2e-bypass path too, which may have no Auth0 tenant
+ * configured at all — `onBack` is supplied by the caller rather than this
+ * component calling `useAuth0()` itself (see `SignInRefused`).
  */
-export function RoleRequired() {
-  const { logout } = useAuth0()
-
+export function RoleRequired({ onBack }: { onBack: () => void }) {
   return (
     <div className="gate-screen">
       <div className="gate-card gate-card--dashed" data-testid="role-required">
@@ -19,10 +19,7 @@ export function RoleRequired() {
           Your account doesn&rsquo;t have a role yet, so we can&rsquo;t pick your topics — ask your
           team admin to set one and sign in again.
         </p>
-        <button
-          data-testid="role-required-back"
-          onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}
-        >
+        <button data-testid="role-required-back" onClick={onBack}>
           Back to sign-in
         </button>
       </div>
