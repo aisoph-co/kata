@@ -139,7 +139,7 @@ async def import_roster(
 _SUBTREE_CTE = text(
     """
     WITH RECURSIVE subtree(id) AS (
-        SELECT id FROM person WHERE manager_id = :root_id
+        SELECT :root_id AS id
         UNION ALL
         SELECT p.id FROM person p JOIN subtree s ON p.manager_id = s.id
     )
@@ -149,10 +149,11 @@ _SUBTREE_CTE = text(
 
 
 async def get_subtree_ids(session: AsyncSession, root_id: str) -> list[str]:
-    """All persons transitively reporting up to `root_id` via `manager_id`
-    (spec §Identity, roles, teams → Rules, "Subtree"), excluding `root_id`
-    itself. A recursive CTE — the caller is responsible for caching the
-    result per request, per the spec's own wording.
+    """`root_id` plus all its transitive reports via `manager_id` (spec
+    §Identity, roles, teams → Rules, "Subtree": "Subtree of a person = the
+    person plus all transitive reports") — `root_id` itself is included. A
+    recursive CTE — the caller is responsible for caching the result per
+    request, per the spec's own wording.
     """
     result = await session.execute(_SUBTREE_CTE, {"root_id": root_id})
     return [row[0] for row in result.all()]
