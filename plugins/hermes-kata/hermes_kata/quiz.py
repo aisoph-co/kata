@@ -24,7 +24,10 @@ X"), one concept to schedule, and the sprint leaderboard; it never
 attributes an answer to a person and never surfaces an individual's wrong
 answer. This module doesn't register the `/kata-reveal` command itself
 (same as `mcq.py` doesn't register `clarify`) — `handle_reveal_command`
-below is the integration point a command dispatcher calls into.
+below is the integration point a command dispatcher calls into, and it
+returns the message already shaped as the Slack Block Kit template in
+`docs/demo/slack/kata-reveal.blockkit.json` (`render_reveal_blocks`) —
+`{"blocks": [...]}`, ready to post as-is.
 """
 
 from __future__ import annotations
@@ -120,12 +123,20 @@ class DailyQuestion:
     """The daily question, drawn from a sprint artifact (e.g. the
     `PAY-1863` reverted-migration thread) and backed by a real curriculum
     item — `id` is that item's id, so a tap grades through the normal
-    `POST /me/reviews` path instead of a quiz-only shadow record."""
+    `POST /me/reviews` path instead of a quiz-only shadow record.
+
+    `correct_index` is item metadata, not a person's answer — it names
+    which option the reveal marks with ✅ and which count it uses for the
+    "N of M" header chip (`render_reveal_blocks` below). Recording it here
+    doesn't touch the never-attribute-to-a-person rule `build_reveal`
+    already enforces.
+    """
 
     id: str
     prompt: str
     options: Sequence[str]
     concept_id: str
+    correct_index: int
     source: SourceChip
     kind: str = MCQ_KIND
 
@@ -251,20 +262,118 @@ def build_reveal(
     }
 
 
+
+# Reveal message rendering (`docs/demo/slack/kata-reveal.blockkit.json`,
+# AGCTM-69 frame 07) — pure Block Kit `section`/`divider`/`context` blocks,
+# no attachments, no images: the mock's coloured left rail and text colour
+# don't survive into Block Kit (see that template's own README), so the
+# correct option is marked with ✅ + bold instead, and a low correct rate
+# with ⚠️ instead of an orange tag.
+BAR_LENGTH = 10
+_FILLED = "█"
+_EMPTY = "░"
+
+# ⚠️ prefixes the header chip when the correct-pick rate is this low.
+# Chosen against the template's own two data points on an audience of 9:
+# 4 of 9 (44%) renders plain, 1 of 9 (11%) gets the warning — 20% sits
+# between them.
+LOW_CORRECT_RATE_WARNING = 0.2
+
+_PRIVACY_CONTEXT_TEXT = (
+    "*What Kata recorded:* one `mcq` review per person, source `slack_thread`, "
+    "each with the confidence you tapped before the reveal. Your own answer is "
+    "visible only to you and in this thread; the manager view gets the "
+    "concept-level state, never who picked what."
+)
+
+
+def _bar(count: int, audience_size: int) -> str:
+    filled = round(BAR_LENGTH * count / audience_size) if audience_size > 0 else 0
+    filled = max(0, min(BAR_LENGTH, filled))
+    return _FILLED * filled + _EMPTY * (BAR_LENGTH - filled)
+
+
+def _option_line(text: str, count: int, audience_size: int, *, is_correct: bool) -> str:
+    bar = _bar(count, audience_size)
+    if is_correct:
+        return f"`{bar}` *{count}*  ✅ *{text}*"
+    return f"`{bar}` *{count}*  {text}"
+
+
+def _question_header(question: DailyQuestion, correct_count: int, audience_size: int) -> str:
+    chip = f"`{correct_count} of {audience_size}`"
+    if audience_size > 0 and correct_count / audience_size < LOW_CORRECT_RATE_WARNING:
+        chip = f"⚠️ {chip}"
+    return f"*{question.prompt}*   {chip}"
+
+
+def render_reveal_blocks(
+    session: QuizSession,
+    reveal: dict,
+    *,
+    team_note: str | None = None,
+) -> dict:
+    """`build_reveal`'s payload as the Slack message the template defines:
+    a question section (header chip + per-option bars, correct option
+    marked ✅), a divider, an optional team note as a blockquote, the
+    leaderboard, and the privacy context block. Ranks the leaderboard by
+    the order `leaderboard` was passed in — `build_reveal` doesn't sort or
+    break ties, so neither does this.
+    """
+    question = session.question
+    audience_size = session.audience_size()
+    correct_count = reveal["options"][question.correct_index]["count"]
+
+    blocks: list[dict] = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": _question_header(question, correct_count, audience_size)},
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "\n".join(
+                    _option_line(
+                        option["text"], option["count"], audience_size, is_correct=(index == question.correct_index)
+                    )
+                    for index, option in enumerate(reveal["options"])
+                ),
+            },
+        },
+        {"type": "divider"},
+    ]
+    if team_note:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"> *Team note.* {team_note}"}})
+    if reveal["leaderboard"]:
+        lines = ["*Leaderboard*"] + [
+            f"`{rank}`  *{entry['display_name']}* · {entry['score']}"
+            for rank, entry in enumerate(reveal["leaderboard"], start=1)
+        ]
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _PRIVACY_CONTEXT_TEXT}]})
+    return {"blocks": blocks}
+
+
 def handle_reveal_command(
     session: QuizSession,
     *,
     requested_by_is_manager: bool,
     concept_to_schedule: str,
     leaderboard: Sequence[LeaderboardEntry],
+    team_note: str | None = None,
 ) -> dict:
     """`/kata-reveal` (AGCTM-69) — presenter-triggered, never a timer:
     refuses a non-manager presenter and a quiz already revealed, otherwise
-    returns `build_reveal`'s payload. Wire this into Hermes's own
-    slash-command dispatch for `/kata-reveal`.
+    returns the Slack Block Kit reveal message
+    (`docs/demo/slack/kata-reveal.blockkit.json`'s template, built from
+    `build_reveal`'s payload via `render_reveal_blocks`) ready to post as
+    `{"blocks": [...]}`. Wire this into Hermes's own slash-command dispatch
+    for `/kata-reveal`.
     """
     if not requested_by_is_manager:
         raise PermissionError("handle_reveal_command: only a manager may trigger /kata-reveal")
     if session.revealed:
         raise ValueError("handle_reveal_command: this quiz has already been revealed")
-    return build_reveal(session, concept_to_schedule=concept_to_schedule, leaderboard=leaderboard)
+    reveal = build_reveal(session, concept_to_schedule=concept_to_schedule, leaderboard=leaderboard)
+    return render_reveal_blocks(session, reveal, team_note=team_note)

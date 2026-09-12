@@ -57,6 +57,15 @@ reveals only on `handle_reveal_command` (wire this into Hermes's own
 name next to an answer or an individual's wrong answer, always the team
 leaderboard.
 
+`handle_reveal_command` returns the reveal already shaped as the Slack
+Block Kit template in `docs/demo/slack/kata-reveal.blockkit.json`
+(`render_reveal_blocks`) — `{"blocks": [...]}`, postable as-is: a
+question section with a `` `correct of audience` `` header chip (⚠️ below
+a 20% correct rate) and a text-bar line per option (✅ + bold marks
+`DailyQuestion.correct_index`), a divider, an optional team-note
+blockquote, the leaderboard, and a `context` block naming what Kata
+recorded, matching that template's own mock → Block Kit mapping.
+
 Every quiz-answer grading call asserts `quiz_answer_identity(external_id)`,
 never the learner's own platform — the core's `_SOURCE_BY_PLATFORM`
 (`agency-v1/learning_service/reviews.py`) maps `"slack"` unconditionally to
