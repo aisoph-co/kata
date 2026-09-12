@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { navigate, useRoute } from '@/lib/router'
 
 const NAV = [
+  { path: '/connections', label: 'Connections' },
   { path: '/reps', label: 'Reps' },
   { path: '/dashboard', label: 'Dashboard' },
 ] as const
