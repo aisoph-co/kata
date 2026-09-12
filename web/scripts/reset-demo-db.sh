@@ -42,7 +42,7 @@ docker run -d --name agency-demo-pg \
 until docker exec agency-demo-pg pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done
 
 export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/learning"
-(cd "$API_DIR" && uv run alembic upgrade head)
+(cd "$API_DIR" && uv run python "$WEB_DIR/scripts/create-schema.py")
 (cd "$API_DIR" && uv run python -m learning_service.seed "$LEARNING_SEED")
 
 (

@@ -69,8 +69,8 @@ until docker exec agency-demo-pg pg_isready -U postgres >/dev/null 2>&1; do slee
 
 export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/learning"
 
-echo "==> Migrating"
-(cd "$API_DIR" && uv run alembic upgrade head)
+echo "==> Creating schema"
+(cd "$API_DIR" && uv run python "$WEB_DIR/scripts/create-schema.py")
 
 echo "==> Seeding $LEARNING_SEED scenario (idempotent)"
 (cd "$API_DIR" && uv run python -m learning_service.seed "$LEARNING_SEED")

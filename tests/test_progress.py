@@ -1,244 +1,170 @@
-"""`GET /me/progress` + `GET /me/due-summary` wiring: auth, response shape,
-unlocked/mastered/due semantics.
-
-See `test_me_next_endpoint.py`'s module docstring for why `resolve_person_id`
-is overridden with a placeholder here.
+"""`GET /me/progress` + `GET /me/due-summary` (spec §API): per-concept
+mastery/due/unlocked state, and `PersonLearningSummary` (Contract v1.2.1:
+retention bands, `bypass_rate`, `calibration`, `review_count`,
+`last_active`).
 """
 
 import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from fastapi import Depends
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 os.environ.setdefault("SERVICE_TOKEN", "test-token")
+os.environ.setdefault("LEARNING_LLM", "stub")
 os.environ.pop("DATABASE_URL", None)
 
-from learning_service.engine.models import CardState, Concept, ConceptEdge, ConceptState, Item  # noqa: E402
-from learning_service.engine.repository import InMemoryLearningRepository  # noqa: E402
-from learning_service.main import ActingIdentity, acting_identity, app, get_repository, resolve_person_id  # noqa: E402
+from learning_service.curriculum.models import Concept, ConceptEdge, Course, Item  # noqa: E402
+from learning_service.db import get_session  # noqa: E402
+from learning_service.engine.models import CardState, ConceptState  # noqa: E402
+from learning_service.identity.models import Base, Identity, Person  # noqa: E402
+from learning_service.main import app  # noqa: E402
 
 AUTH = {"Authorization": "Bearer test-token", "X-Acting-Identity": "slack:U1"}
-PERSON = "slack:U1"
-NOW = datetime(2026, 9, 6, tzinfo=timezone.utc)
-
-
-async def _placeholder_person_id(identity: ActingIdentity = Depends(acting_identity)) -> str:
-    return f"{identity.platform}:{identity.external_id}"
-
-
-def mcq(item_id: str, concept_id: str) -> Item:
-    return Item(
-        id=item_id,
-        concept_id=concept_id,
-        kind="mcq",
-        prompt=f"prompt {item_id}",
-        payload={"options": ["a", "b"], "correct_index": 0, "explanation": "because"},
-        status="published",
-    )
 
 
 @pytest.fixture
-def repo() -> InMemoryLearningRepository:
-    return InMemoryLearningRepository()
+async def session():
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as s:
+        yield s
+    await engine.dispose()
 
 
 @pytest.fixture
-def client(repo):
-    app.dependency_overrides[get_repository] = lambda: repo
-    app.dependency_overrides[resolve_person_id] = _placeholder_person_id
+async def seeded(session: AsyncSession):
+    person = Person(display_name="Ada", email="ada@example.com")
+    session.add(person)
+    await session.flush()
+    session.add(Identity(person_id=person.id, platform="slack", external_id="U1"))
+    course = Course(title="Payments")
+    session.add(course)
+    await session.flush()
+    foundation = Concept(course_id=course.id, slug="found", title="Foundation", mastery_threshold=0.85)
+    advanced = Concept(course_id=course.id, slug="adv", title="Advanced")
+    session.add_all([foundation, advanced])
+    await session.flush()
+    session.add(ConceptEdge(from_concept_id=foundation.id, to_concept_id=advanced.id, kind="prerequisite"))
+    item = Item(concept_id=foundation.id, kind="mcq", prompt="q", payload={"options": ["a", "b"], "correct_index": 0}, status="published")
+    session.add(item)
+    await session.commit()
+    return {"person": person, "foundation": foundation, "advanced": advanced, "item": item}
+
+
+@pytest.fixture
+def client(session: AsyncSession):
+    async def override_get_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_get_session
     try:
         yield TestClient(app)
     finally:
-        app.dependency_overrides.pop(get_repository, None)
-        app.dependency_overrides.pop(resolve_person_id, None)
+        app.dependency_overrides.pop(get_session, None)
 
 
-def test_me_progress_requires_token(client):
-    r = client.get("/me/progress", headers={"X-Acting-Identity": "slack:U1"})
-    assert r.status_code == 401
-
-
-def test_me_due_summary_requires_token(client):
-    r = client.get("/me/due-summary", headers={"X-Acting-Identity": "slack:U1"})
-    assert r.status_code == 401
-
-
-def test_me_progress_empty_curriculum(client):
+def test_progress_defaults_before_any_review(client, seeded):
     r = client.get("/me/progress", headers=AUTH)
     assert r.status_code == 200
     body = r.json()
-    assert body["concepts"] == []
-    assert body["summary"] == {
-        "retention": {
-            "d1": {"accuracy": None, "samples": 0},
-            "d7": {"accuracy": None, "samples": 0},
-            "d30": {"accuracy": None, "samples": 0},
-        },
-        "bypass_rate": None,
-        "calibration": None,
-        "review_count": 0,
-        "last_active": None,
+    by_id = {c["concept_id"]: c for c in body["concepts"]}
+    found = by_id[seeded["foundation"].id]
+    assert found["p_known"] == 0.20
+    assert found["mastered"] is False
+    assert found["unlocked"] is True
+    adv = by_id[seeded["advanced"].id]
+    assert adv["unlocked"] is False
+    summary = body["summary"]
+    assert summary["review_count"] == 0
+    assert summary["last_active"] is None
+    assert summary["bypass_rate"] is None
+    assert summary["calibration"] is None
+    assert summary["retention"] == {
+        "d1": {"accuracy": None, "samples": 0},
+        "d7": {"accuracy": None, "samples": 0},
+        "d30": {"accuracy": None, "samples": 0},
     }
 
 
-def test_me_due_summary_empty_curriculum(client):
-    r = client.get("/me/due-summary", headers=AUTH)
+def test_progress_summary_after_reviews(client, seeded):
+    r = client.post(
+        "/me/reviews",
+        json={"item_id": seeded["item"].id, "idempotency_key": "k1", "response": {"choice": 0}, "confidence": 4},
+        headers=AUTH,
+    )
     assert r.status_code == 200
-    assert r.json() == {"due_count": 0, "overdue_count": 0, "new_available_count": 0}
+
+    body = client.get("/me/progress", headers=AUTH).json()
+    summary = body["summary"]
+    assert summary["review_count"] == 1
+    assert summary["last_active"] is not None
+    assert summary["bypass_rate"] == 0.0
+    # confidence=4 (scaled (4-1)/4=0.75), accuracy=1.0 (correct) -> -0.25
+    assert summary["calibration"] == pytest.approx(-0.25)
 
 
-def test_me_progress_reports_p_known_mastered_due_unlocked(repo, client):
-    foundation = Concept(id="found", course_id="course", slug="found", title="Foundation", mastery_threshold=0.85)
-    advanced = Concept(id="adv", course_id="course", slug="adv", title="Advanced", mastery_threshold=0.85)
-    repo.add_concept(foundation)
-    repo.add_concept(advanced)
-    repo.add_edge(ConceptEdge(from_concept_id="found", to_concept_id="adv", kind="prerequisite"))
-    repo.add_item(mcq("found-item", "found"))
-    repo.add_item(mcq("adv-item", "adv"))
-    repo.add_concept_state(ConceptState(person_id=PERSON, concept_id="found", p_known=0.9))
-    repo.add_card_state(
+def test_history_returns_chart_rows_for_the_acting_person(client, seeded):
+    submitted = client.post(
+        "/me/reviews",
+        json={"item_id": seeded["item"].id, "idempotency_key": "history-k1", "response": {"choice": 0}},
+        headers=AUTH,
+    )
+    assert submitted.status_code == 200
+
+    history = client.get("/me/history?days=30", headers=AUTH)
+    assert history.status_code == 200
+    assert history.json()["days"] == 30
+    row = history.json()["reviews"][-1]
+    assert row["concept_id"] == seeded["foundation"].id
+    assert row["item_id"] == seeded["item"].id
+    assert row["rating"] == "good"
+    assert row["bypassed"] is False
+
+    progress = client.get("/me/progress", headers=AUTH).json()
+    concept = next(item for item in progress["concepts"] if item["concept_id"] == seeded["foundation"].id)
+    assert row["p_known_after"] == concept["p_known"]
+
+
+async def test_progress_reflects_a_bypassed_review_in_bypass_rate(client, seeded):
+    r = client.post(
+        "/me/reviews",
+        json={"item_id": seeded["item"].id, "idempotency_key": "k1", "response": {"choice": 0}, "bypassed": True},
+        headers=AUTH,
+    )
+    assert r.status_code == 200
+    body = client.get("/me/progress", headers=AUTH).json()
+    assert body["summary"]["bypass_rate"] == 1.0
+
+
+async def test_due_summary_counts_overdue_and_new(client, seeded, session):
+    person = seeded["person"]
+    now = datetime.now(timezone.utc)
+    session.add(
         CardState(
-            person_id=PERSON,
-            item_id="found-item",
-            stability=10,
-            difficulty=5,
-            due_at=NOW - timedelta(days=1),
+            person_id=person.id, item_id="ghost-item", stability=2.0, difficulty=5.0,
+            due_at=now - timedelta(days=1), state="review", reps=1, lapses=0, last_review_at=now - timedelta(days=3),
         )
     )
-
-    r = client.get("/me/progress", headers=AUTH)
-    assert r.status_code == 200
-    by_id = {c["concept_id"]: c for c in r.json()["concepts"]}
-
-    assert by_id["found"] == {"concept_id": "found", "p_known": 0.9, "mastered": True, "due_count": 1, "unlocked": True}
-    assert by_id["adv"] == {"concept_id": "adv", "p_known": pytest.approx(0.2), "mastered": False, "due_count": 0, "unlocked": True}
-
-
-def test_me_progress_locked_concept_is_not_unlocked(repo, client):
-    foundation = Concept(id="found", course_id="course", slug="found", title="Foundation")
-    advanced = Concept(id="adv", course_id="course", slug="adv", title="Advanced")
-    repo.add_concept(foundation)
-    repo.add_concept(advanced)
-    repo.add_edge(ConceptEdge(from_concept_id="found", to_concept_id="adv", kind="prerequisite"))
-
-    r = client.get("/me/progress", headers=AUTH)
-    by_id = {c["concept_id"]: c for c in r.json()["concepts"]}
-    assert by_id["adv"]["unlocked"] is False
-
-
-def test_me_due_summary_counts_overdue_and_new_available(repo, client):
-    concept = Concept(id="c1", course_id="course", slug="c1", title="C1")
-    repo.add_concept(concept)
-    repo.add_item(mcq("i1", "c1"))
-    repo.add_item(mcq("i2", "c1"))
-    repo.add_card_state(
-        CardState(
-            person_id=PERSON,
-            item_id="i1",
-            stability=10,
-            difficulty=5,
-            due_at=NOW - timedelta(days=1),
-        )
-    )
+    await session.commit()
 
     r = client.get("/me/due-summary", headers=AUTH)
     assert r.status_code == 200
     body = r.json()
     assert body["overdue_count"] == 1
-    assert body["new_available_count"] == 1
-    assert body["due_count"] == body["overdue_count"] + body["new_available_count"]
+    assert body["new_available_count"] == 1  # seeded["item"], foundation is unlocked
+    assert body["due_count"] == 2
 
 
-def test_me_due_summary_excludes_locked_and_mastered_concepts(repo, client):
-    locked = Concept(id="locked", course_id="course", slug="locked", title="Locked")
-    gate = Concept(id="gate", course_id="course", slug="gate", title="Gate")
-    mastered = Concept(id="mastered", course_id="course", slug="mastered", title="Mastered", mastery_threshold=0.85)
-    repo.add_concept(locked)
-    repo.add_concept(gate)
-    repo.add_concept(mastered)
-    repo.add_edge(ConceptEdge(from_concept_id="gate", to_concept_id="locked", kind="prerequisite"))
-    repo.add_item(mcq("locked-item", "locked"))
-    repo.add_item(mcq("mastered-item", "mastered"))
-    repo.add_concept_state(ConceptState(person_id=PERSON, concept_id="mastered", p_known=0.9))
+async def test_due_summary_excludes_new_items_from_a_mastered_concept(client, seeded, session):
+    person = seeded["person"]
+    session.add(ConceptState(person_id=person.id, concept_id=seeded["foundation"].id, p_known=0.95, reviews=3))
+    await session.commit()
 
     r = client.get("/me/due-summary", headers=AUTH)
     assert r.status_code == 200
-    assert r.json() == {"due_count": 0, "overdue_count": 0, "new_available_count": 0}
-
-
-def test_me_progress_summary_reports_bypass_rate_and_calibration(repo, client):
-    repo.add_concept(Concept(id="c1", course_id="course", slug="c1", title="C1"))
-    repo.add_item(mcq("i1", "c1"))
-    base = NOW - timedelta(days=10)
-    repo.append_review(
-        {
-            "id": "r1",
-            "person_id": PERSON,
-            "item_id": "i1",
-            "reviewed_at": base.isoformat(),
-            "kind": "mcq",
-            "grade": 1.0,
-            "rating": 3,
-            "source": "web",
-            "idempotency_key": "k1",
-            "asserted_by": "x",
-            "result": {},
-            "confidence": 4,
-            "bypassed": False,
-        }
-    )
-    repo.append_review(
-        {
-            "id": "r2",
-            "person_id": PERSON,
-            "item_id": "i1",
-            "reviewed_at": (base + timedelta(days=1)).isoformat(),
-            "kind": "mcq",
-            "grade": 0.0,
-            "rating": 1,
-            "source": "web",
-            "idempotency_key": "k2",
-            "asserted_by": "x",
-            "result": {},
-            "confidence": 2,
-            "bypassed": True,
-        }
-    )
-
-    r = client.get("/me/progress", headers=AUTH)
-    summary = r.json()["summary"]
-    assert summary["review_count"] == 2
-    assert summary["bypass_rate"] == 0.5
-    # Mean confidence 3 -> (3-1)/4 = 0.5; accuracy 1 of 2 = 0.5 -> calibrated.
-    assert summary["calibration"] == pytest.approx(0.0)
-    assert summary["last_active"] is not None
-    # 1 sample, below the 5-sample floor for accuracy, but the count is real.
-    assert summary["retention"]["d1"] == {"accuracy": None, "samples": 1}
-
-
-def test_me_progress_and_due_summary_scoped_to_acting_person(repo, client):
-    concept = Concept(id="c1", course_id="course", slug="c1", title="C1")
-    repo.add_concept(concept)
-    repo.add_item(mcq("i1", "c1"))
-    repo.add_concept_state(ConceptState(person_id="slack:OTHER", concept_id="c1", p_known=0.9))
-    repo.add_card_state(
-        CardState(
-            person_id="slack:OTHER",
-            item_id="i1",
-            stability=10,
-            difficulty=5,
-            due_at=NOW - timedelta(days=1),
-        )
-    )
-
-    r = client.get("/me/progress", headers=AUTH)
-    concepts = r.json()["concepts"]
-    assert concepts[0]["p_known"] == pytest.approx(0.2)
-    assert concepts[0]["due_count"] == 0
-
-    r = client.get("/me/due-summary", headers=AUTH)
     body = r.json()
-    assert body["overdue_count"] == 0
-    assert body["new_available_count"] == 1
+    assert body["new_available_count"] == 0

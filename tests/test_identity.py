@@ -1,9 +1,9 @@
-"""Identity resolution (spec §Identity, roles, teams → Rules): exact
-`(platform, external_id)` match, then `(platform, alt_id)`, else unknown —
-a person is never auto-created. Uses an in-memory SQLite engine so these
-run without a live Postgres, same as the rest of this suite.
+"""Identity resolution (AGCTM-27 / spec §Identity, roles, teams → Rules):
+exact `(platform, external_id)` match, then `(platform, alt_id)`, else
+unknown — a person is never auto-created. Uses an in-memory SQLite engine so
+these run without a live Postgres, same as the rest of this suite.
 
-Also covers linking a second platform via a one-time code.
+Also covers linking a second platform via a one-time code (AGCTM-34).
 """
 
 import os

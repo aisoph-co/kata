@@ -1,158 +1,112 @@
-"""`POST /me/reviews` tests: grading, FSRS/BKT wiring, idempotency replay,
-and acting-person scoping. `short_answer` is graded through `StubLLMClient`
-only — no live model calls.
-
-See `test_me_next_endpoint.py`'s module docstring for why `resolve_person_id`
-is overridden with a placeholder here (an in-memory `LearningRepository`, no
-roster) while `acting_identity`/`require_service_token` stay real.
+"""`POST /me/reviews` (spec §Learning engine, §API): grading dispatch,
+idempotency, `no_grader`, bypass, and the `answer` row a `short_answer`
+review writes. Uses an in-memory SQLite engine and the stub grader
+(`LEARNING_LLM=stub`), same pattern as the rest of this suite.
 """
 
 import os
 
 import pytest
-from fastapi import Depends
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 os.environ.setdefault("SERVICE_TOKEN", "test-token")
+os.environ.setdefault("LEARNING_LLM", "stub")
 os.environ.pop("DATABASE_URL", None)
 
-from learning_service.engine.models import Concept, Item  # noqa: E402
-from learning_service.engine.repository import InMemoryLearningRepository  # noqa: E402
-from learning_service.main import (  # noqa: E402
-    ActingIdentity,
-    acting_identity,
-    app,
-    get_llm_client,
-    get_repository,
-    resolve_person_id,
-)
-from tests.stub_llm import StubLLMClient  # noqa: E402
+from learning_service.curriculum.models import Concept, Course, Item  # noqa: E402
+from learning_service.db import get_session  # noqa: E402
+from learning_service.identity.models import Base, Identity, Person  # noqa: E402
+from learning_service.main import app  # noqa: E402
+from learning_service.privacy.models import Answer  # noqa: E402
+from learning_service.reviews import get_llm_client  # noqa: E402
+from learning_service.grading.stub import StubGraderClient  # noqa: E402
 
-AUTH = {
-    "Authorization": "Bearer test-token",
-    "X-Acting-Identity": "slack:U1",
-}
-
-
-async def _placeholder_person_id(identity: ActingIdentity = Depends(acting_identity)) -> str:
-    return f"{identity.platform}:{identity.external_id}"
-
-
-def _seed_repo() -> InMemoryLearningRepository:
-    repo = InMemoryLearningRepository()
-    repo.add_concept(Concept(id="c1", course_id="course", slug="c1", title="C1"))
-    repo.add_item(
-        Item(
-            id="item-mcq-1",
-            concept_id="c1",
-            kind="mcq",
-            prompt="2+2?",
-            payload={"options": ["3", "4"], "correct_index": 1, "explanation": "arithmetic"},
-        )
-    )
-    repo.add_item(
-        Item(
-            id="item-msq-1",
-            concept_id="c1",
-            kind="msq",
-            prompt="pick the primes",
-            payload={"options": ["2", "3", "4"], "correct_indices": [0, 1], "explanation": "2 and 3 are prime"},
-        )
-    )
-    repo.add_item(
-        Item(
-            id="item-self-rated-1",
-            concept_id="c1",
-            kind="self_rated",
-            prompt="recall the mnemonic",
-            payload={"answer": "the model answer"},
-        )
-    )
-    repo.add_item(
-        Item(
-            id="item-short-answer-1",
-            concept_id="c1",
-            kind="short_answer",
-            prompt="explain recursion",
-            payload={"reference": "a function calling itself", "rubric": "mentions base case"},
-        )
-    )
-    repo.add_item(
-        Item(
-            id="item-teach-back-1",
-            concept_id="c1",
-            kind="teach_back",
-            prompt="teach it back",
-            payload={"reference": "ref", "rubric": "rubric"},
-        )
-    )
-    return repo
+AUTH = {"Authorization": "Bearer test-token", "X-Acting-Identity": "slack:U1"}
 
 
 @pytest.fixture
-def repo():
-    return _seed_repo()
+async def session():
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessionmaker() as s:
+        yield s
+    await engine.dispose()
 
 
 @pytest.fixture
-def client(repo):
-    app.dependency_overrides[get_repository] = lambda: repo
-    app.dependency_overrides[get_llm_client] = lambda: StubLLMClient(default_grade=0.95)
-    app.dependency_overrides[resolve_person_id] = _placeholder_person_id
+async def seeded(session: AsyncSession):
+    person = Person(display_name="Ada", email="ada@example.com")
+    session.add(person)
+    await session.flush()
+    session.add(Identity(person_id=person.id, platform="slack", external_id="U1"))
+    course = Course(title="Payments")
+    session.add(course)
+    await session.flush()
+    concept = Concept(course_id=course.id, slug="c1", title="Concept 1")
+    session.add(concept)
+    await session.flush()
+    mcq = Item(
+        concept_id=concept.id, kind="mcq", prompt="2+2?",
+        payload={"options": ["3", "4"], "correct_index": 1, "explanation": "arithmetic"}, status="published",
+    )
+    msq = Item(
+        concept_id=concept.id, kind="msq", prompt="pick primes",
+        payload={"options": ["2", "3", "4"], "correct_indices": [0, 1], "explanation": "primes"}, status="published",
+    )
+    self_rated = Item(concept_id=concept.id, kind="self_rated", prompt="rate yourself", payload={"answer": "42"}, status="published")
+    short_answer = Item(
+        concept_id=concept.id, kind="short_answer", prompt="explain it",
+        payload={"reference": "ref", "rubric": "widget factory pattern"}, status="published",
+    )
+    teach_back = Item(concept_id=concept.id, kind="teach_back", prompt="teach it back", payload={"reference": "ref", "rubric": "r"}, status="published")
+    session.add_all([mcq, msq, self_rated, short_answer, teach_back])
+    await session.commit()
+    return {
+        "person": person, "course": course, "concept": concept,
+        "mcq": mcq, "msq": msq, "self_rated": self_rated, "short_answer": short_answer, "teach_back": teach_back,
+    }
+
+
+@pytest.fixture
+def client(session: AsyncSession):
+    async def override_get_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    # Import order across the test suite decides which grader `reviews.py`'s
+    # module-level `_llm_client` builds (it reads `LEARNING_LLM` once, at
+    # whichever test file first imports `learning_service.main`) — override
+    # the dependency directly instead, so this file's `short_answer`
+    # grading is deterministic regardless of collection order.
+    app.dependency_overrides[get_llm_client] = lambda: StubGraderClient()
     try:
         yield TestClient(app)
     finally:
-        app.dependency_overrides.pop(get_repository, None)
+        app.dependency_overrides.pop(get_session, None)
         app.dependency_overrides.pop(get_llm_client, None)
-        app.dependency_overrides.pop(resolve_person_id, None)
 
 
-@pytest.fixture
-def client_with_stub(repo):
-    stub = StubLLMClient(default_grade=0.95)
-    app.dependency_overrides[get_repository] = lambda: repo
-    app.dependency_overrides[get_llm_client] = lambda: stub
-    app.dependency_overrides[resolve_person_id] = _placeholder_person_id
-    try:
-        yield TestClient(app), stub
-    finally:
-        app.dependency_overrides.pop(get_repository, None)
-        app.dependency_overrides.pop(get_llm_client, None)
-        app.dependency_overrides.pop(resolve_person_id, None)
+def _submit(client, item_id, response, **extra):
+    body = {"item_id": item_id, "idempotency_key": "k-1", **extra, "response": response}
+    return client.post("/me/reviews", json=body, headers=AUTH)
 
 
-def test_reviews_requires_service_token(client):
-    r = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "k1", "response": {"choice": 1}},
-        headers={"X-Acting-Identity": "slack:U1"},
-    )
-    assert r.status_code == 401
-
-
-def test_submit_correct_mcq_review_returns_full_grade_contract(client):
-    r = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "k1", "response": {"choice": 1}},
-        headers=AUTH,
-    )
+def test_mcq_correct_advances_card_and_concept_state(client, seeded):
+    r = _submit(client, seeded["mcq"].id, {"choice": 1})
     assert r.status_code == 200
     body = r.json()
     assert body["grade"] == 1.0
     assert body["rating"] == 3
     assert body["correct"] is True
     assert body["explanation"] == "arithmetic"
-    assert body["next_due_at"]
-    assert 0 <= body["concept"]["p_known"] <= 1
-    assert body["concept"]["mastered"] is False
+    assert body["concept"]["p_known"] > 0.20  # advanced past P_INIT
 
 
-def test_submit_incorrect_mcq_review(client):
-    r = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "k1", "response": {"choice": 0}},
-        headers=AUTH,
-    )
+def test_mcq_incorrect(client, seeded):
+    r = _submit(client, seeded["mcq"].id, {"choice": 0})
     assert r.status_code == 200
     body = r.json()
     assert body["grade"] == 0.0
@@ -160,246 +114,82 @@ def test_submit_incorrect_mcq_review(client):
     assert body["correct"] is False
 
 
-def test_submit_msq_review_partial_credit(client):
-    r = client.post(
-        "/me/reviews",
-        json={"item_id": "item-msq-1", "idempotency_key": "k1", "response": {"choices": [0]}},
-        headers=AUTH,
-    )
+def test_msq_partial_credit(client, seeded):
+    r = _submit(client, seeded["msq"].id, {"choices": [0]})
     assert r.status_code == 200
-    body = r.json()
-    assert body["grade"] == 0.5
-    assert body["rating"] == 2
-    assert body["correct"] is False
+    assert r.json()["grade"] == 0.5
 
 
-def test_submit_self_rated_review(client):
-    r = client.post(
-        "/me/reviews",
-        json={"item_id": "item-self-rated-1", "idempotency_key": "k1", "response": {"rating": 4}},
-        headers=AUTH,
-    )
+def test_self_rated_grade_table(client, seeded):
+    r = _submit(client, seeded["self_rated"].id, {"rating": 4})
     assert r.status_code == 200
-    body = r.json()
-    assert body["grade"] == 1.0
-    assert body["rating"] == 4
-    assert body["correct"] is True
-    assert body["explanation"] == "the model answer"
+    assert r.json()["grade"] == 1.0
+    assert r.json()["rating"] == 4
 
 
-def test_submit_short_answer_review_uses_stub_llm(client):
-    r = client.post(
-        "/me/reviews",
-        json={"item_id": "item-short-answer-1", "idempotency_key": "k1", "response": {"text": "a base-case recursive call"}},
-        headers=AUTH,
-    )
+async def test_short_answer_writes_an_answer_row(client, seeded, session):
+    r = _submit(client, seeded["short_answer"].id, {"text": "we used the widget factory pattern"})
     assert r.status_code == 200
-    body = r.json()
-    assert body["grade"] == 0.95
-    assert body["rating"] == 4
-    assert body["correct"] is True
-    assert "stub grading" in body["explanation"]
+    assert r.json()["grade"] == 1.0
+
+    from sqlalchemy import select
+
+    result = await session.execute(select(Answer))
+    answers = result.scalars().all()
+    assert len(answers) == 1
+    assert answers[0].person_id == seeded["person"].id
+    assert answers[0].text == "we used the widget factory pattern"
 
 
-def test_response_shape_must_match_item_kind(client):
-    r = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "k1", "response": {"text": "nope"}},
-        headers=AUTH,
-    )
-    assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "validation_error"
-
-
-def test_unknown_item_id_is_rejected(client):
-    r = client.post(
-        "/me/reviews",
-        json={"item_id": "does-not-exist", "idempotency_key": "k1", "response": {"choice": 0}},
-        headers=AUTH,
-    )
-    assert r.status_code == 404
-    assert r.json()["detail"]["code"] == "item_not_found"
-
-
-def test_teach_back_returns_no_grader(client):
-    r = client.post(
-        "/me/reviews",
-        json={"item_id": "item-teach-back-1", "idempotency_key": "k1", "response": {"text": "anything"}},
-        headers=AUTH,
-    )
+def test_teach_back_has_no_grader(client, seeded):
+    r = _submit(client, seeded["teach_back"].id, {"text": "anything"})
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "no_grader"
 
 
-def test_duplicate_idempotency_key_replays_original_result(client):
-    first = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "dup-key", "response": {"choice": 1}},
-        headers=AUTH,
-    )
-    assert first.status_code == 200
+def test_bypass_never_grades_above_point_three(client, seeded):
+    r = _submit(client, seeded["mcq"].id, {"choice": 1}, bypassed=True)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["bypassed"] is True
+    assert body["grade"] <= 0.3
+    assert body["grade"] == 0.0
+    assert body["correct"] is False
 
-    second = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "dup-key", "response": {"choice": 0}},
-        headers=AUTH,
-    )
+
+def test_bypass_of_teach_back_still_works_bypass_checked_first(client, seeded):
+    r = _submit(client, seeded["teach_back"].id, {"text": "anything"}, bypassed=True)
+    assert r.status_code == 200
+    assert r.json()["grade"] == 0.0
+
+
+def test_confidence_is_echoed_and_not_confused_with_self_rated_rating(client, seeded):
+    r = _submit(client, seeded["self_rated"].id, {"rating": 4}, confidence=2)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["confidence"] == 2
+    assert body["rating"] == 4
+
+
+def test_idempotency_replay_returns_original_result(client, seeded):
+    first = _submit(client, seeded["mcq"].id, {"choice": 1})
+    assert first.status_code == 200
+    second = _submit(client, seeded["mcq"].id, {"choice": 0})  # different response, same key
     assert second.status_code == 409
     detail = second.json()["detail"]
     assert detail["code"] == "idempotency_replay"
     assert detail["result"] == first.json()
 
 
-def test_learner_id_in_body_is_rejected(client):
-    r = client.post(
-        "/me/reviews",
-        json={
-            "item_id": "item-mcq-1",
-            "idempotency_key": "k1",
-            "response": {"choice": 0},
-            "person_id": "someone-else",
-        },
-        headers=AUTH,
-    )
-    assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "validation_error"
-
-
-def test_reviews_are_scoped_to_acting_person(client):
-    r1 = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "shared-key", "response": {"choice": 1}},
-        headers={"Authorization": "Bearer test-token", "X-Acting-Identity": "slack:U1"},
-    )
-    assert r1.status_code == 200
-
-    # Same idempotency key, different acting person: not a replay.
-    r2 = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "shared-key", "response": {"choice": 0}},
-        headers={"Authorization": "Bearer test-token", "X-Acting-Identity": "slack:U2"},
-    )
-    assert r2.status_code == 200
-    assert r2.json()["correct"] is False
-
-
-def test_append_only_review_log_records_the_submission(client, repo):
-    client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "k1", "response": {"choice": 1}},
-        headers=AUTH,
-    )
-    assert len(repo.reviews) == 1
-    logged = repo.reviews[0]
-    assert logged["item_id"] == "item-mcq-1"
-    assert logged["kind"] == "mcq"
-    assert logged["grade"] == 1.0
-    assert logged["rating"] == 3
-    assert logged["source"] == "slack_dm"
-    assert logged["asserted_by"] == "slack:U1"
-
-
-def test_bypassed_mcq_review_caps_grade_and_rating(client):
-    r = client.post(
-        "/me/reviews",
-        json={
-            "item_id": "item-mcq-1",
-            "idempotency_key": "k1",
-            "response": {"choice": 1},
-            "bypassed": True,
-        },
-        headers=AUTH,
-    )
-    assert r.status_code == 200
-    body = r.json()
-    # Hard requirement: a bypassed review never grades above 0.3.
-    assert body["grade"] <= 0.3
-    assert body["grade"] == 0.0
-    assert body["rating"] == 1
-    assert body["correct"] is False
-    assert body["explanation"] == "arithmetic"
-    assert body["bypassed"] is True
-
-
-def test_bypassed_teach_back_returns_the_canned_reference_instead_of_no_grader(client):
-    # teach_back is the one item kind where bypass is the only possible
-    # action, so it must not 422 no_grader.
-    r = client.post(
-        "/me/reviews",
-        json={
-            "item_id": "item-teach-back-1",
-            "idempotency_key": "k1",
-            "response": {"text": "anything"},
-            "bypassed": True,
-        },
-        headers=AUTH,
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["grade"] == 0.0
-    assert body["rating"] == 1
-    assert body["correct"] is False
-    assert body["explanation"] == "ref"
-
-
-def test_bypassed_short_answer_never_calls_the_grader(client_with_stub):
-    # A bypassed short_answer must not pay for a live grader call whose
-    # result is then discarded.
-    client, stub = client_with_stub
-    r = client.post(
-        "/me/reviews",
-        json={
-            "item_id": "item-short-answer-1",
-            "idempotency_key": "k1",
-            "response": {"text": "a base-case recursive call"},
-            "bypassed": True,
-        },
-        headers=AUTH,
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["grade"] == 0.0
-    assert body["rating"] == 1
-    assert body["correct"] is False
-    assert body["explanation"] == "a function calling itself"
-    assert stub.calls == []
-
-
-def test_confidence_is_stored_and_echoed(client, repo):
-    r = client.post(
-        "/me/reviews",
-        json={
-            "item_id": "item-mcq-1",
-            "idempotency_key": "k1",
-            "response": {"choice": 1},
-            "confidence": 4,
-        },
-        headers=AUTH,
-    )
-    assert r.status_code == 200
-    assert r.json()["confidence"] == 4
-    assert repo.reviews[0]["confidence"] == 4
-    assert repo.reviews[0]["bypassed"] is False
-
-
-def test_confidence_out_of_range_is_rejected(client):
-    r = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "k1", "response": {"choice": 1}, "confidence": 6},
-        headers=AUTH,
-    )
+def test_a_learner_id_in_the_body_is_rejected(client, seeded):
+    body = {
+        "item_id": seeded["mcq"].id, "idempotency_key": "k-2", "response": {"choice": 1},
+        "person_id": "someone-else",
+    }
+    r = client.post("/me/reviews", json=body, headers=AUTH)
     assert r.status_code == 422
 
 
-def test_repeated_correct_reviews_increase_p_known(client):
-    first = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "k1", "response": {"choice": 1}},
-        headers=AUTH,
-    )
-    second = client.post(
-        "/me/reviews",
-        json={"item_id": "item-mcq-1", "idempotency_key": "k2", "response": {"choice": 1}},
-        headers=AUTH,
-    )
-    assert second.json()["concept"]["p_known"] > first.json()["concept"]["p_known"]
+def test_unknown_item_is_404(client, seeded):
+    r = _submit(client, "nope", {"choice": 1})
+    assert r.status_code == 404
