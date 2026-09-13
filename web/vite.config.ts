@@ -28,6 +28,35 @@ function e2eSessionPlugin(token: string | undefined): Plugin {
   }
 }
 
+/**
+ * Dev-server twin of the Caddyfile's `@blockedWrite` matcher (KATA-28):
+ * AUTH0_DISABLED=true blocks every mutating verb to `/api/*` here too, so
+ * `npm run dev` enforces the same read-only boundary a disabled-gate
+ * deployment does instead of only catching it in prod. `/identities/resolve`
+ * is the one exception — POST-shaped but a pure lookup every screen needs
+ * for the acting persona, never a write (see the Caddyfile comment) — so it
+ * stays allowed alongside GET/HEAD/OPTIONS. False (default) — no middleware
+ * is even registered, so this changes nothing.
+ */
+function apiReadOnlyPlugin(disabled: boolean): Plugin {
+  return {
+    name: 'kata-api-read-only',
+    configureServer(server) {
+      if (!disabled) return
+      server.middlewares.use('/api', (req, res, next) => {
+        const method = (req.method ?? 'GET').toUpperCase()
+        const path = (req.url ?? '').split('?')[0]
+        if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS' || path === '/identities/resolve') {
+          next()
+          return
+        }
+        res.statusCode = 403
+        res.end()
+      })
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   // Loaded server-side only (Vite config runs in Node, never in the bundle).
@@ -36,9 +65,10 @@ export default defineConfig(({ mode }) => {
   const serviceToken = env.SERVICE_TOKEN ?? 'dev'
   const apiTarget = env.API_TARGET ?? 'http://localhost:8000'
   const e2eBypassToken = env.E2E_AUTH_BYPASS_TOKEN || undefined
+  const auth0Disabled = env.AUTH0_DISABLED === 'true'
 
   return {
-    plugins: [react(), tailwindcss(), e2eSessionPlugin(e2eBypassToken)],
+    plugins: [react(), tailwindcss(), e2eSessionPlugin(e2eBypassToken), apiReadOnlyPlugin(auth0Disabled)],
     resolve: {
       alias: {
         '@': new URL('./src', import.meta.url).pathname,
