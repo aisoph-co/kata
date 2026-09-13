@@ -270,6 +270,53 @@ def test_a_cron_triggered_tool_call_resolves_via_kata_job_identities_env(plugin_
     assert seen[0]["identity"].external_id == "C0BVDPW43PE"
 
 
+def test_a_cron_triggered_tool_call_resolves_via_kata_job_identities_keyed_by_job_id(plugin_module, monkeypatch):
+    """`KATA_JOB_IDENTITIES` keyed by job *name* never matches in production
+    (fix round 4: `job_name` never reaches the handler) — an override that
+    needs to actually take effect has to be keyed by the job's own id
+    instead, recovered from its cron-scheduler session id. This is the
+    shape that works live."""
+    monkeypatch.setenv("KATA_JOB_IDENTITIES", '{"0e771dbadf60": "slack:U0C03BWUVEE"}')
+
+    LearningServiceClient = plugin_module.LearningServiceClient
+    seen = []
+
+    def fake_request(self, method, path, *, identity=None, params=None, json_body=None):
+        seen.append({"method": method, "path": path, "identity": identity})
+        return {"grade": 1.0, "correct": True}
+
+    monkeypatch.setattr(LearningServiceClient, "request", fake_request)
+
+    ctx = FakePluginContext()
+    plugin_module.register(ctx)
+
+    submit_review = ctx.tools["submit_review"]["handler"]
+    submit_review(
+        {"item_id": "lm-1", "idempotency_key": "k1", "response": {"choice": 1}},
+        session_id="cron_0e771dbadf60_20260912_083307",
+        job_name=None,
+    )
+
+    assert len(seen) == 1
+    assert seen[0]["identity"].platform == "slack"
+    assert seen[0]["identity"].external_id == "U0C03BWUVEE"
+
+
+def test_register_with_kata_default_acting_identity_set_does_not_break_registration(plugin_module, monkeypatch):
+    """KATA-24 fix round 5: `KATA_DEFAULT_ACTING_IDENTITY` is new config —
+    confirm `register(ctx)` still wires everything with it set (the
+    plumbing that matters here; the group-vs-person branch itself is
+    covered directly against `make_identity_resolver` in
+    test_identity_hook.py, since exercising it through `register(ctx)` would
+    need a real `cron.jobs` module this test environment doesn't have)."""
+    monkeypatch.setenv("KATA_DEFAULT_ACTING_IDENTITY", "slack:U0C03BWUVEE")
+
+    ctx = FakePluginContext()
+    plugin_module.register(ctx)  # must not raise
+
+    assert "submit_review" in ctx.tools
+
+
 def test_register_refuses_an_unknown_identity_before_any_tool_call(plugin_module, monkeypatch):
     LearningServiceClient = plugin_module.LearningServiceClient
     monkeypatch.setattr(

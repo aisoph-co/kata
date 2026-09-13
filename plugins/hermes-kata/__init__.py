@@ -43,6 +43,7 @@ try:
     from .hermes_kata.tools import (
         JobIdentityRegistry,
         cron_job_deliver_lookup,
+        default_acting_identity_from_env,
         job_identities_from_env,
         make_identity_resolver,
         register_tools,
@@ -58,6 +59,7 @@ except ImportError:
     from hermes_kata.tools import (
         JobIdentityRegistry,
         cron_job_deliver_lookup,
+        default_acting_identity_from_env,
         job_identities_from_env,
         make_identity_resolver,
         register_tools,
@@ -85,8 +87,19 @@ def register(ctx: Any) -> None:
     # `tools.cron_job_id_from_session_id`). No `ctx.cron` dependency: this
     # plugin runs in-process with Hermes, so the lookup imports `cron.jobs`
     # directly.
+    # KATA-24 fix round 5: a team-quiz/teach-back/demo-quiz job's `deliver`
+    # names the Slack channel it posts into, not a person — resolving *that*
+    # as the acting identity (fix round 4's own behavior) hits
+    # `unknown_identity` at the learning service, since no channel is ever a
+    # seeded person. `KATA_DEFAULT_ACTING_IDENTITY` names a real seeded
+    # person to act as for exactly those jobs instead; unset, behavior is
+    # unchanged from round 4.
     resolve_identity = make_identity_resolver(
-        cache, job_identities, store_handle, job_deliver_lookup=cron_job_deliver_lookup()
+        cache,
+        job_identities,
+        store_handle,
+        job_deliver_lookup=cron_job_deliver_lookup(),
+        default_acting_identity=default_acting_identity_from_env(os.environ.get("KATA_DEFAULT_ACTING_IDENTITY")),
     )
 
     register_identity_hook(ctx, client, cache, store_handle)
