@@ -62,6 +62,16 @@
 		}
 	}
 
+	# KATA-14 (demo round): the popup's CopilotKit runtime, co-located in
+	# this same container (docker-entrypoint.sh) and reachable only through
+	# this proxy — never a public port of its own. Headers pass through
+	# unmodified: unlike /api/*, the runtime does its own identity
+	# resolution (Auth0 ID token or the e2e bypass pair) and needs the
+	# original Authorization/X-E2E-* headers, not a substituted one.
+	handle /copilotkit {
+		reverse_proxy localhost:{$COPILOT_RUNTIME_PORT:8090}
+	}
+
 	# Static assets + SPA fallback (client-side router owns every other path).
 	handle {
 		root * /usr/share/caddy

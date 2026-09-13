@@ -4,15 +4,33 @@
 before auth/pairing and before the agent turn starts — the only hook that can
 refuse a message before Hermes does anything else with it (spec "Decisions",
 "Identity-binding hook").
+
+`install_api_server_identity_gate` (KATA-14) binds identity for the
+`api_server` platform (the web popup's Hermes surface) instead, because
+`pre_gateway_dispatch` never fires for it at all: confirmed directly against
+the exact commit the deployed image is built from (`ARG HERMES_GIT_SHA` in
+`deploy/kata/hermes/Dockerfile`'s pinned image, checked out from
+github.com/NousResearch/hermes-agent) — `gateway/platforms/
+api_server_openai_routes.py`'s route handlers call `APIServerAdapter.
+_run_agent` directly, never `GatewayRunner._handle_message`, the only place
+that fires the hook. `hermes-agent` is NousResearch's own third-party
+package (MIT-licensed, not a repo this workspace owns), so there is no
+same-day upstream PR or pinned fork to land ahead of this issue's deploy —
+this installs the identical resolve-or-refuse contract directly onto the
+one platform adapter that never reaches it, entirely from this plugin's own
+`register(ctx)` call, no image or pin change.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from .client import ActingIdentity, LearningServiceClient
+
+logger = logging.getLogger(__name__)
 
 UNKNOWN_IDENTITY_MESSAGE = (
     "You're not set up as a Kata learner yet — ask your team admin for an invite."
@@ -185,3 +203,119 @@ def register_identity_hook(
     ctx: Any, client: LearningServiceClient, cache: SessionIdentityCache, store_handle: SessionStoreHandle
 ) -> None:
     ctx.register_hook("pre_gateway_dispatch", make_bind_identity(client, cache, store_handle))
+
+
+# ---------------------------------------------------------------------------
+# api_server identity gate (KATA-14) — see module docstring for why this
+# exists as a monkeypatch rather than a `pre_gateway_dispatch` registration.
+# ---------------------------------------------------------------------------
+
+
+def resolve_api_server_identity(
+    client: LearningServiceClient, gateway_session_key: str
+) -> Optional[BoundPerson]:
+    """Resolve the identity for an api_server turn from the
+    `X-Hermes-Session-Key` value the Node runtime stamps
+    (`web/server/index.ts`): `"<platform>:<external_id>"`, e.g.
+    `"web:hugo@ferry.example"`. A key with no `:` (or an empty platform/id)
+    can't be anyone's identity."""
+    platform, sep, external_id = gateway_session_key.partition(":")
+    if not sep or not platform or not external_id:
+        return None
+    try:
+        return _resolve_bound_person(client, platform, external_id, None)
+    except Exception:
+        # A Learning Service hiccup must fail closed (refuse), never let an
+        # unresolved caller through as if they were known.
+        logger.exception("hermes-kata: identity resolve failed for an api_server turn")
+        return None
+
+
+def install_api_server_identity_gate(client: LearningServiceClient, cache: SessionIdentityCache) -> bool:
+    """Monkeypatch `APIServerAdapter._run_agent` — the single choke point
+    every api_server route that produces text calls (`/v1/chat/completions`
+    streaming and non-streaming, `/v1/responses`, session chat) — to
+    resolve identity from `gateway_session_key` before any `AIAgent` is
+    built, mirroring `bind_identity`'s resolve-or-refuse contract exactly.
+
+    Returns True once patched. Returns False (after logging why) when the
+    installed `hermes-agent` doesn't expose `_run_agent` in the expected
+    shape — e.g. a future upgrade renamed/restructured it. Fails closed
+    either way: `tools.py`'s resolver still raises "no bound identity" for
+    every api_server tool call when this hasn't run, rather than silently
+    trusting an unresolved caller.
+    """
+    try:
+        from gateway.platforms import api_server as _api_server_module
+    except ImportError:
+        logger.debug(
+            "hermes-kata: gateway.platforms.api_server not importable — "
+            "api_server platform not enabled in this process, nothing to patch"
+        )
+        return False
+
+    adapter_cls = getattr(_api_server_module, "APIServerAdapter", None)
+    original_run_agent = getattr(adapter_cls, "_run_agent", None)
+    if adapter_cls is None or original_run_agent is None:
+        logger.error(
+            "hermes-kata: gateway.platforms.api_server.APIServerAdapter._run_agent not found — "
+            "installed hermes-agent has changed shape; api_server identity gate NOT installed, "
+            "every api_server learning-tool call will fail closed with 'no bound identity'"
+        )
+        return False
+
+    async def _patched_run_agent(self: Any, *args: Any, **kwargs: Any) -> tuple:
+        session_id = kwargs.get("session_id") or ""
+        gateway_session_key = kwargs.get("gateway_session_key") or ""
+        cache_key = (session_id or gateway_session_key).strip()
+        lookup_key = (gateway_session_key or session_id).strip()
+
+        person = resolve_api_server_identity(client, lookup_key) if lookup_key else None
+        if person is None:
+            # Zero LLM calls: return the same shape a completed run would,
+            # so the OpenAI-format response the popup sees is a normal
+            # assistant message, not an error envelope.
+            stream_delta_callback = kwargs.get("stream_delta_callback")
+            if stream_delta_callback is not None:
+                # A streaming caller (CopilotKit's OpenAIAdapter) only ever
+                # renders text pushed through this callback — the
+                # non-streaming `final_response` field below is never
+                # re-emitted as a delta by the SSE writer.
+                stream_delta_callback(UNKNOWN_IDENTITY_MESSAGE)
+            return (
+                {"final_response": UNKNOWN_IDENTITY_MESSAGE, "completed": True, "session_id": session_id},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            )
+
+        if cache_key:
+            cache.set(cache_key, person)
+        try:
+            return await original_run_agent(self, *args, **kwargs)
+        finally:
+            if cache_key:
+                cache.clear(cache_key)
+
+    adapter_cls._run_agent = _patched_run_agent
+    logger.info("hermes-kata: api_server identity gate installed (KATA-14)")
+    return True
+
+
+def with_api_server_fallback(resolve_identity, api_server_cache: SessionIdentityCache):
+    """Wrap `tools.py`'s `make_identity_resolver` output so a tool call from
+    an api_server turn also resolves: `resolve_identity`'s own gateway-style
+    lookup (session key -> `SessionIdentityCache` -> `get_session_metadata`
+    -> a cron job) never finds an api_server `session_id` — it was never
+    registered with the gateway's own `SessionStore` — so this only ever
+    adds a fallback, never changes what a gateway-platform call resolves to.
+    """
+
+    def resolve(*, session_id: Optional[str] = None, job_name: Optional[str] = None, **kwargs: Any) -> ActingIdentity:
+        try:
+            return resolve_identity(session_id=session_id, job_name=job_name, **kwargs)
+        except LookupError:
+            person = api_server_cache.get(session_id) if session_id else None
+            if person is not None:
+                return person.identity
+            raise
+
+    return resolve
