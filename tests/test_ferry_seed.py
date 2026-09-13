@@ -60,7 +60,7 @@ async def test_ferry_seed_writes_expected_counts(sessionmaker):
     assert len(concepts) == 14
     assert len(edges) == 21
     assert len(items) == 46
-    assert len(reviews) == 2199
+    assert len(reviews) == 3219
     assert all(item.status == "published" for item in items)
 
 
@@ -77,7 +77,7 @@ async def test_ferry_seed_is_idempotent_on_restart(sessionmaker):
         persons = (await session.execute(select(Person))).scalars().all()
         reviews = (await session.execute(select(Review))).scalars().all()
     assert len(persons) == 10  # no duplicates
-    assert len(reviews) == 2199
+    assert len(reviews) == 3219
 
 
 async def test_quinn_is_the_sole_operator(sessionmaker):
@@ -115,13 +115,13 @@ async def test_ferry_seed_uses_the_real_team_slack_identities(sessionmaker):
     }.items() <= slack_by_email.items()
 
 
-async def test_ferry_seed_writes_five_topics(sessionmaker):
+async def test_ferry_seed_writes_six_topics(sessionmaker):
     async with sessionmaker() as session:
         await seed(session, "ferry")
         topics = (await session.execute(select(Topic))).scalars().all()
         memberships = (await session.execute(select(TopicConcept))).scalars().all()
 
-    assert len(topics) == 5
+    assert len(topics) == 6
     assert {t.persona_role for t in topics} == {"tech_lead", "senior_swe", "junior_swe", "pm", "uxd"}
     pm_topic = next(t for t in topics if t.persona_role == "pm")
     assert pm_topic.slug == "sca-exemption-change"
@@ -151,7 +151,7 @@ async def test_confidence_and_bypassed_preserved_as_review_columns(sessionmaker)
 
     assert row.bypassed is True
     assert row.confidence == a_bypassed_review["confidence"]
-    assert len(bypassed_count) == 168
+    assert len(bypassed_count) == 523
 
 
 async def test_seed_replays_reviews_into_derived_state(sessionmaker):
@@ -187,7 +187,7 @@ def test_hugo_progress_shows_non_zero_retention(seeded_client):
     non-zero retention — proof the seed actually loaded and was replayed,
     not just that the service is up."""
     r = seeded_client.get(
-        "/me/progress", headers={**TOKEN_HEADER, "X-Acting-Identity": "slack:U0FERRY06"}
+        "/me/progress", headers={**TOKEN_HEADER, "X-Acting-Identity": "slack:U0C01E6F2J2"}
     )
     assert r.status_code == 200
     summary = r.json()["summary"]
