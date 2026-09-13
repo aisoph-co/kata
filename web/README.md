@@ -26,7 +26,9 @@ screen, any Google account with a verified email gets in, the app then
 runs exactly as above. Off by default (`npm run dev`, this walkthrough).
 To try it locally: `cp .env.auth0.example .env.auth0.local`,
 fill in the two values, `npm run dev:auth0`. Sign out lives in the avatar
-menu, only when the gate is on.
+menu, only when the gate is on. `VITE_AUTH0_DISABLED` (KATA-28) is a
+separate kill switch, also off by default, that forces the gate off even
+in a deployment that has the two Auth0 values configured.
 
 **e2e auth bypass** (AGCTM-64 finding #5): a test runner has no Auth0
 account to log in with, so a deployment that sets `E2E_AUTH_BYPASS_TOKEN`
@@ -80,11 +82,13 @@ curl http://localhost:8080/healthz && curl http://localhost:8080/en   # both -> 
 |---|---|---|
 | `SERVICE_TOKEN` / `API_TARGET` | `web/.env` (dev) | Vite proxy bearer token / upstream, default `:8000` |
 | `VITE_AUTH0_DOMAIN` / `VITE_AUTH0_CLIENT_ID` | build-time only (`web/.env.auth0.local` dev, Railway build args prod) | Sign-in gate. Unset (default) — no gate, demo mode as above |
+| `VITE_AUTH0_DISABLED` | build-time only | Sign-in gate kill switch (KATA-28). Unset/anything but `true` (default) — no effect, gate follows the two vars above. `true` — force the gate off even if a tenant is configured |
 | `LEARNING_SERVICE_URL` | container env (prod) | Caddy's `/api/*` upstream |
 | `LEARNING_SERVICE_TOKEN` | container env (prod) | Bearer token Caddy injects into `/api/*` |
 | `PORT` | container env (prod) | Caddy listen port, default `8080` |
 | `E2E_AUTH_BYPASS_TOKEN` | container env (test deployments) / `web/.env` (dev) | Enables `/__e2e/session` for requests carrying the same value — see "e2e auth bypass" above. Unset = 404 = no bypass |
 | `VITE_COPILOTKIT_RUNTIME_URL` | build-time only | In-app Kata bot. Unset (default) — no popup |
+| `VITE_COPILOTKIT_ENABLED` | build-time only | Kata bot on/off switch (KATA-28). Unset/anything but `false` (default) — no effect, popup follows the var above. `false` — popup off even if a runtime is configured |
 | `HERMES_API_URL` / `HERMES_API_KEY` | runtime service env | Hermes OpenAI-compatible endpoint the runtime forwards every turn to |
 | `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` | runtime service env | Verifies the caller's ID token against the tenant's JWKS |
 | `WEB_BASE_URL` | runtime service env | The one origin the runtime accepts browser calls from |
