@@ -28,6 +28,11 @@ function KataCopilotChat({ runtimeUrl, headers }: { runtimeUrl: string; headers:
   useCopilotAction({
     name: 'showMasteryChart',
     description: "Render the signed-in person's mastery-by-concept chart",
+    // Pure generative-UI render, never a model-callable tool — the
+    // installed CopilotKit build only accepts a bare {render} action when
+    // it's explicitly marked "frontend"-available; omitting this throws
+    // "Invalid action configuration" at mount and crashes the whole page.
+    available: 'frontend',
     parameters: [{ name: 'concepts', type: 'object[]', required: true }],
     render: ({ args }) => <ChatMasteryChart concepts={(args?.concepts ?? []) as ChatConceptMastery[]} />,
   })
@@ -35,6 +40,7 @@ function KataCopilotChat({ runtimeUrl, headers }: { runtimeUrl: string; headers:
   useCopilotAction({
     name: 'showPKnownTrend',
     description: "Render the signed-in person's p_known trend for one concept",
+    available: 'frontend',
     parameters: [
       { name: 'conceptId', type: 'string', required: true },
       { name: 'conceptTitle', type: 'string', required: false },
@@ -53,6 +59,7 @@ function KataCopilotChat({ runtimeUrl, headers }: { runtimeUrl: string; headers:
   useCopilotAction({
     name: 'showReviewCard',
     description: 'Render the next due review as an answerable card',
+    available: 'frontend',
     parameters: [{ name: 'item', type: 'object', required: true }],
     render: ({ args }) =>
       args?.item ? <ChatReviewCard item={args.item as ChatReviewItem} runtimeUrl={runtimeUrl} headers={headers} /> : <></>,
