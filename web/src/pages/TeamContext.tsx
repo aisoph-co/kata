@@ -149,32 +149,6 @@ function ConnectPanel() {
   )
 }
 
-/** Unseeded state (KATA-15): before any source is connected, there is no
- * ingestion list, no STREAM log, and no concept graph/topic cards to show —
- * those all describe curriculum grounded in sources that don't exist yet.
- * Keeps the same left-column "Connect team context" panel/action W5 shows
- * populated, so connecting a source (ConnectPanel is reactive) flips this
- * screen straight into the populated one, no reload. */
-function EmptyTeamContext() {
-  const { t } = useTranslation()
-  return (
-    <div className="mx-auto flex max-w-[1400px] flex-col gap-6 px-6 py-6">
-      <div className="grid gap-6 lg:grid-cols-[420px_1fr]">
-        <ConnectPanel />
-        <Card>
-          <CardContent
-            className="flex h-full min-h-[560px] flex-col items-center justify-center gap-2 py-16 text-center"
-            data-testid="team-context-empty-state"
-          >
-            <h2 className="font-heading text-base font-semibold">{t('teamContext.emptyTitle')}</h2>
-            <p className="max-w-sm text-sm text-muted-foreground">{t('teamContext.emptyBody')}</p>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  )
-}
-
 type IngestStatus = 'idle' | 'running' | 'empty' | 'done' | 'error'
 
 /** Ingestion-source list (KATA-11): repo, issues, releases, Slack, Exa,
@@ -428,28 +402,21 @@ export function TeamContext() {
     [],
   )
 
-  // Unseeded (KATA-15): with nothing connected there's no source to ground
-  // curriculum in, so the API calls below stay off until a source connects
-  // — no invented curriculum fetched (let alone rendered) in the meantime.
-  const connected = useConnectState()
-  const hasConnection = PLATFORMS.some((p) => connected[p.id])
-
-  const graph = useApiQuery<{ nodes: GraphNode[]; edges: GraphEdge[] }>('concept-graph', '/me/concept-graph', {
-    enabled: hasConnection,
-  })
-  const progress = useApiQuery<{ concepts: ProgressConcept[] }>('team-context-progress', '/me/progress', {
-    enabled: hasConnection,
-  })
-  const nextItem = useApiQuery<{ items: { concept_id: string }[] }>('team-context-next', '/me/next?limit=1', {
-    enabled: hasConnection,
-  })
+  // KATA-15 originally gated Team context on a Connect source being wired
+  // up (empty state until then). Reverted per this ticket: Team context and
+  // the rest of the learning content are grounded in the seeded curriculum
+  // and each persona's real progress, never in whether a messaging platform
+  // happens to be connected — Connect is its own, unrelated, localStorage-only
+  // mock (`connect-store.ts`), so these queries always run.
+  const graph = useApiQuery<{ nodes: GraphNode[]; edges: GraphEdge[] }>('concept-graph', '/me/concept-graph')
+  const progress = useApiQuery<{ concepts: ProgressConcept[] }>('team-context-progress', '/me/progress')
+  const nextItem = useApiQuery<{ items: { concept_id: string }[] }>('team-context-next', '/me/next?limit=1')
 
   // Acting persona's own topic — best-effort (not every persona has one);
   // errors are swallowed here, it's a highlight, not primary content.
   const ownTopics = useQuery({
     queryKey: ['own-topics', active.id],
     queryFn: () => apiFetch<{ topics: Topic[] }>('/topics', { persona: active }),
-    enabled: hasConnection,
     retry: false,
   })
   const ownTopicConceptIds = useMemo(
@@ -461,7 +428,6 @@ export function TeamContext() {
     queries: BOTTOM_TOPIC_PERSONAS.map((persona) => ({
       queryKey: ['bottom-topics', persona.id],
       queryFn: () => apiFetch<{ topics: Topic[] }>('/topics', { persona }),
-      enabled: hasConnection,
       retry: false,
     })),
   })
@@ -612,10 +578,6 @@ export function TeamContext() {
 
   const focusedNode = graph.data?.nodes.find((n) => n.concept_id === focusedId) ?? null
   const relatedCount = graph.data?.edges.filter((e) => e.kind === 'related').length ?? 0
-
-  if (!hasConnection) {
-    return <EmptyTeamContext />
-  }
 
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-6 px-6 py-6">

@@ -120,10 +120,21 @@ const server = http.createServer(async (req, res) => {
   // Built fresh per request: the only thing that varies call to call is the
   // identity header, and a shared client built once at startup would mean
   // every caller after the first shares whoever made that first request.
+  //
+  // X-Hermes-Session-Id: without it, Hermes derives the session id from the
+  // system prompt + first user message (gateway/platforms/
+  // api_server_openai_routes.py::_derive_chat_session_id) — two learners
+  // opening with the same text collide on one id, and the identity cache a
+  // learning-tool call reads is keyed by that id (KATA-22). Stamping the
+  // same stable per-learner value already used for the session *key* keeps
+  // every one of a learner's own turns on the same conversation too.
   const openai = new OpenAI({
     apiKey: hermesApiKey,
     baseURL: hermesApiUrl,
-    defaultHeaders: { 'X-Hermes-Session-Key': identity.sessionKey },
+    defaultHeaders: {
+      'X-Hermes-Session-Key': identity.sessionKey,
+      'X-Hermes-Session-Id': identity.sessionKey,
+    },
   })
   const hermesAdapter = new OpenAIAdapter({ openai, model: 'hermes-agent' })
   // AE-25: the insight lane needs both the learning service and OpenRouter

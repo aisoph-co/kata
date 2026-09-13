@@ -32,12 +32,44 @@
 	# token — client-supplied credentials never reach the upstream. The
 	# e2e bypass headers stop here too; the core never sees them.
 	handle /api/* {
-		uri strip_prefix /api
-		reverse_proxy {$LEARNING_SERVICE_URL} {
-			header_up Authorization "Bearer {$LEARNING_SERVICE_TOKEN}"
-			header_up -X-E2E-Auth-Bypass
-			header_up -X-E2E-Learner-Email
+		# KATA-28: with the sign-in gate off by design (AUTH0_DISABLED, set
+		# alongside the build's VITE_AUTH0_DISABLED), nothing upstream of
+		# Caddy checks who's calling any more — the client-supplied
+		# X-Acting-Identity is trusted as-is. Block every mutating verb
+		# here instead: reads stay open (mock seeded data), writing needs
+		# the gate back on. `/identities/resolve` is POST-shaped but is the
+		# one lookup every screen needs to show the acting persona — it
+		# never writes identity state (`main.py`'s `identities_resolve`) —
+		# so it stays allowed alongside GET/HEAD/OPTIONS. Unset (default),
+		# none of this runs and nothing changes.
+		# `route` (not the bare directive list) so this block's own order —
+		# respond, then strip+forward — is exactly what runs, not whatever
+		# Caddy's default directive sort would otherwise pick.
+		route {
+			@blockedWrite {
+				not method GET HEAD OPTIONS
+				not path /api/identities/resolve
+				expression `{env.AUTH0_DISABLED} == "true"`
+			}
+			respond @blockedWrite 403
+
+			uri strip_prefix /api
+			reverse_proxy {$LEARNING_SERVICE_URL} {
+				header_up Authorization "Bearer {$LEARNING_SERVICE_TOKEN}"
+				header_up -X-E2E-Auth-Bypass
+				header_up -X-E2E-Learner-Email
+			}
 		}
+	}
+
+	# KATA-14 (demo round): the popup's CopilotKit runtime, co-located in
+	# this same container (docker-entrypoint.sh) and reachable only through
+	# this proxy — never a public port of its own. Headers pass through
+	# unmodified: unlike /api/*, the runtime does its own identity
+	# resolution (Auth0 ID token or the e2e bypass pair) and needs the
+	# original Authorization/X-E2E-* headers, not a substituted one.
+	handle /copilotkit {
+		reverse_proxy localhost:{$COPILOT_RUNTIME_PORT:8090}
 	}
 
 	# Static assets + SPA fallback (client-side router owns every other path).

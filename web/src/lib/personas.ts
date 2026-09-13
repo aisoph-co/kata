@@ -29,7 +29,7 @@ export const PERSONAS: Persona[] = [
     roles: ['manager', 'operator'],
     role: 'tech_lead',
     channel: 'Slack',
-    personId: '1161cf71-d3df-51ce-85dd-7276f0c98dd4',
+    personId: '5e648633-33d5-5789-914e-34ad675b96eb',
     avatarColor: '#4c3f91',
   },
   {
@@ -49,7 +49,7 @@ export const PERSONAS: Persona[] = [
     roles: ['learner'],
     role: 'junior_swe',
     channel: 'WhatsApp',
-    personId: 'bd33e37f-cc6e-537a-99af-e01daae77bea',
+    personId: 'b5c371a1-a791-534b-8035-f0121a33c677',
     avatarColor: '#0f6b5b',
   },
   {
@@ -69,7 +69,7 @@ export const PERSONAS: Persona[] = [
     roles: ['learner'],
     role: 'pm',
     channel: 'WhatsApp',
-    personId: '0b4b3ee0-5844-5672-80a9-047f3dcc1809',
+    personId: 'ed7b2f26-9925-54a2-a460-a70289595f56',
     avatarColor: '#8a2f2f',
   },
   {

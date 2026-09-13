@@ -36,7 +36,13 @@ try:
     from .hermes_kata.client import LearningServiceClient
     from .hermes_kata.digest import create_digest_jobs, load_digest_roster, team_recipient_from_env
     from .hermes_kata.guardrails import register_guardrails_section, register_socratic_debate_skill
-    from .hermes_kata.identity import SessionIdentityCache, SessionStoreHandle, register_identity_hook
+    from .hermes_kata.identity import (
+        SessionIdentityCache,
+        SessionStoreHandle,
+        install_api_server_identity_gate,
+        register_identity_hook,
+        with_api_server_fallback,
+    )
     from .hermes_kata.mcq import register_mcq_rendering_section
     from .hermes_kata.quiz import ensure_quiz_thread_identity
     from .hermes_kata.team_reveal import register_team_reveal
@@ -51,7 +57,13 @@ except ImportError:
     from hermes_kata.client import LearningServiceClient
     from hermes_kata.digest import create_digest_jobs, load_digest_roster, team_recipient_from_env
     from hermes_kata.guardrails import register_guardrails_section, register_socratic_debate_skill
-    from hermes_kata.identity import SessionIdentityCache, SessionStoreHandle, register_identity_hook
+    from hermes_kata.identity import (
+        SessionIdentityCache,
+        SessionStoreHandle,
+        install_api_server_identity_gate,
+        register_identity_hook,
+        with_api_server_fallback,
+    )
     from hermes_kata.mcq import register_mcq_rendering_section
     from hermes_kata.quiz import ensure_quiz_thread_identity
     from hermes_kata.team_reveal import register_team_reveal
@@ -89,8 +101,20 @@ def register(ctx: Any) -> None:
         cache, job_identities, store_handle, job_deliver_lookup=cron_job_deliver_lookup()
     )
 
+    # KATA-14: a second, independent cache for the web popup's platform —
+    # api_server never touches the gateway's own SessionStore at all (see
+    # identity.py's module docstring), so it can't share `cache` above.
+    api_server_cache = SessionIdentityCache()
+
     register_identity_hook(ctx, client, cache, store_handle)
-    register_tools(ctx, client, resolve_identity=resolve_identity)
+    # No-op (returns False, logs why) when the api_server platform isn't
+    # even loaded in this process — e.g. a Slack-only/CLI-only Hermes.
+    install_api_server_identity_gate(client, api_server_cache)
+    register_tools(
+        ctx,
+        client,
+        resolve_identity=with_api_server_fallback(resolve_identity, api_server_cache),
+    )
     register_mcq_rendering_section(ctx)
     register_guardrails_section(ctx)
     register_team_reveal(ctx)

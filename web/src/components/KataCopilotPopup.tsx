@@ -28,6 +28,11 @@ function KataCopilotChat({ runtimeUrl, headers }: { runtimeUrl: string; headers:
   useCopilotAction({
     name: 'showMasteryChart',
     description: "Render the signed-in person's mastery-by-concept chart",
+    // Pure generative-UI render, never a model-callable tool — the
+    // installed CopilotKit build only accepts a bare {render} action when
+    // it's explicitly marked "frontend"-available; omitting this throws
+    // "Invalid action configuration" at mount and crashes the whole page.
+    available: 'frontend',
     parameters: [{ name: 'concepts', type: 'object[]', required: true }],
     render: ({ args }) => <ChatMasteryChart concepts={(args?.concepts ?? []) as ChatConceptMastery[]} />,
   })
@@ -35,6 +40,7 @@ function KataCopilotChat({ runtimeUrl, headers }: { runtimeUrl: string; headers:
   useCopilotAction({
     name: 'showPKnownTrend',
     description: "Render the signed-in person's p_known trend for one concept",
+    available: 'frontend',
     parameters: [
       { name: 'conceptId', type: 'string', required: true },
       { name: 'conceptTitle', type: 'string', required: false },
@@ -53,6 +59,7 @@ function KataCopilotChat({ runtimeUrl, headers }: { runtimeUrl: string; headers:
   useCopilotAction({
     name: 'showReviewCard',
     description: 'Render the next due review as an answerable card',
+    available: 'frontend',
     parameters: [{ name: 'item', type: 'object', required: true }],
     render: ({ args }) =>
       args?.item ? <ChatReviewCard item={args.item as ChatReviewItem} runtimeUrl={runtimeUrl} headers={headers} /> : <></>,
@@ -88,11 +95,16 @@ export function KataCopilotPopup() {
   // the runtime, in which case the popup stays off rather than pointing at
   // nothing.
   const runtimeUrl = import.meta.env.VITE_COPILOTKIT_RUNTIME_URL as string | undefined
+  // KATA-28: on by default — unset, or anything but the literal string
+  // 'false', leaves today's behaviour (popup shows once a runtime URL is
+  // configured) untouched. Set to 'false' to turn the bot off for a
+  // deployment that has a runtime provisioned but doesn't want it surfaced.
+  const copilotEnabled = import.meta.env.VITE_COPILOTKIT_ENABLED !== 'false'
 
-  // No runtime configured, or (real Auth0 session) still fetching the ID
-  // token the runtime needs — render nothing rather than a popup that would
-  // 401 on its first message.
-  if (!runtimeUrl || !headers) return null
+  // Disabled, no runtime configured, or (real Auth0 session) still fetching
+  // the ID token the runtime needs — render nothing rather than a popup
+  // that would 401 on its first message.
+  if (!copilotEnabled || !runtimeUrl || !headers) return null
 
   return (
     <CopilotKit runtimeUrl={runtimeUrl} headers={headers} properties={{ actingPersona: persona.header }}>
