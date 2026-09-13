@@ -13,6 +13,12 @@ COPY . .
 # (Railway) supplies the values as build args; no runtime env var needed.
 ARG VITE_AUTH0_DOMAIN
 ARG VITE_AUTH0_CLIENT_ID
+# KATA-28: same build-arg treatment as the pair above. Pair it with the
+# AUTH0_DISABLED *container* env var (set at deploy time, not here) for the
+# gate to actually stay off *and* read-only — this ARG alone only affects
+# the SPA's own UI, not what the Caddyfile lets through. Unset (default),
+# no effect either way.
+ARG VITE_AUTH0_DISABLED
 RUN npm run build
 
 FROM caddy:2-alpine
