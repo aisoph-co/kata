@@ -86,9 +86,9 @@ real source in `test_quiz_thread_identity_link.py`) is treated as success.
 
 ## Running the tests
 
-Run from this repo's root, with `agency-v1` checked out as a sibling
-directory (`tools.json`'s source — `hermes_kata/tools.py`'s default catalog
-path resolution):
+Run from this repo's root. The contract tests read this repo's own
+`learning_service/` and `deploy/kata/hermes/tools.json`; set
+`LEARNING_SERVICE_SRC` to test against a different checkout:
 
 ```sh
 pip install -e "./plugins/hermes-kata[dev]"
@@ -99,11 +99,7 @@ No live Hermes process or database is needed — every test is either a pure
 function or a fake standing in for the documented `PluginContext`/hook API
 (`tests/fakes.py`).
 
-Not yet wired into a GitHub Actions workflow — the push credential used to
-build this PR didn't have the `workflow` scope needed to add one. A
-maintainer should add a job mirroring `web`'s shape in `.github/workflows/
-ci.yml`, checking out `aisoph-co/agency-v1` as a sibling path and running the
-commands above.
+CI (`.github/workflows/ci.yml`) runs this suite from `plugins/hermes-kata`.
 
 ## Installing into the Kata Hermes instance
 
@@ -131,6 +127,6 @@ a given environment, every message 403s at the gateway; that's expected, not
 a plugin bug.
 
 `KATA_TOOLS_JSON`, if set, points straight at a `tools.json` file and always
-wins. Unset, the default falls back to `LEARNING_SERVICE_SRC` (default a
-sibling `agency-v1/` checkout — `tools.json` lives there with the learning
-service) plus `learning_service/tools.json`.
+wins. Unset, `LEARNING_SERVICE_SRC/learning_service/tools.json` is used if
+`LEARNING_SERVICE_SRC` is set, else this repo's own
+`deploy/kata/hermes/tools.json`.

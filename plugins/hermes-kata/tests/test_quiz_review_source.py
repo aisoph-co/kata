@@ -19,7 +19,9 @@ from pathlib import Path
 from hermes_kata.quiz import QUIZ_ANSWER_SOURCE_PLATFORM, quiz_answer_identity
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEARNING_SERVICE_SRC = Path(os.environ.get("LEARNING_SERVICE_SRC") or (REPO_ROOT.parent / "agency-v1"))
+# The learning service lives in this repo; `LEARNING_SERVICE_SRC` can still
+# point at another checkout.
+LEARNING_SERVICE_SRC = Path(os.environ.get("LEARNING_SERVICE_SRC") or REPO_ROOT)
 REVIEWS_PY = LEARNING_SERVICE_SRC / "learning_service" / "reviews.py"
 
 
