@@ -40,15 +40,14 @@ def _default_tools_json_path() -> Path:
     override = os.environ.get("KATA_TOOLS_JSON")
     if override:
         return Path(override)
-    # `tools.json` lives with the learning service in `aisoph-co/agency-v1`,
-    # not this repo. Resolve it the same way the rest of build-day resolves
-    # that repo: `LEARNING_SERVICE_SRC`, default a sibling `agency-v1/`
-    # checkout — how `multica repo checkout` lays out this workspace.
-    learning_service_src = Path(
-        os.environ.get("LEARNING_SERVICE_SRC")
-        or Path(__file__).resolve().parents[3].parent / "agency-v1"
-    )
-    return learning_service_src / "learning_service" / "tools.json"
+    # `LEARNING_SERVICE_SRC`, if set, points at a checkout that carries its
+    # own `learning_service/tools.json` (the original `agency-v1` layout).
+    learning_service_src = os.environ.get("LEARNING_SERVICE_SRC")
+    if learning_service_src:
+        return Path(learning_service_src) / "learning_service" / "tools.json"
+    # Otherwise use this repo's own copy — the same file
+    # `deploy/kata/hermes/Dockerfile` bakes into the image.
+    return Path(__file__).resolve().parents[3] / "deploy" / "kata" / "hermes" / "tools.json"
 
 
 def load_catalog(path: Optional[Path] = None) -> list[dict]:
