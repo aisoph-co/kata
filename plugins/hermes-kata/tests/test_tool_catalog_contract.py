@@ -12,12 +12,15 @@ from fakes import FakeLearningServiceClient, FakePluginContext
 from hermes_kata.tools import TOOLSET, load_catalog, register_tools
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-# Mirrors `_default_tools_json_path`'s own resolution (tools.py): `tools.json`
-# lives in `agency-v1`, not this repo — `LEARNING_SERVICE_SRC`, default a
-# sibling `agency-v1/` checkout (how `multica repo checkout` lays out this
-# workspace).
-LEARNING_SERVICE_SRC = Path(os.environ.get("LEARNING_SERVICE_SRC") or (REPO_ROOT.parent / "agency-v1"))
-TOOLS_JSON = LEARNING_SERVICE_SRC / "learning_service" / "tools.json"
+# Mirrors `_default_tools_json_path`'s own resolution (tools.py): an explicit
+# `LEARNING_SERVICE_SRC` checkout if set, else this repo's own
+# `deploy/kata/hermes/tools.json`.
+_SRC = os.environ.get("LEARNING_SERVICE_SRC")
+TOOLS_JSON = (
+    Path(_SRC) / "learning_service" / "tools.json"
+    if _SRC
+    else REPO_ROOT / "deploy" / "kata" / "hermes" / "tools.json"
+)
 
 
 def test_tools_json_exists_at_the_default_path():
