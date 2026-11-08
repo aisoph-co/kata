@@ -169,6 +169,28 @@ async def test_run_ingestion_untraceable_concept_gets_no_item_and_stays_draft(se
 
 
 # ---------------------------------------------------------------------------
+# `run_ingestion` — a failure mid-run never leaks exception text
+# ---------------------------------------------------------------------------
+
+
+class _ExplodingExtractionClient(StubExtractionClient):
+    async def classify_relation(self, **_kwargs):
+        raise RuntimeError("connection to postgresql://internal-host:5432 refused")
+
+
+async def test_run_ingestion_failure_streams_a_generic_error(session: AsyncSession, caplog):
+    client = _ExplodingExtractionClient(concept_frequency(ISSUES))
+    with caplog.at_level("ERROR", logger="learning_service.ingestion"):
+        events = [chunk async for chunk in run_ingestion(session, client, issues=ISSUES)]
+
+    assert events[-1].startswith(b"event: error")
+    assert b"internal-host" not in events[-1]
+    assert b"RuntimeError" not in events[-1]
+    # The detail still reaches the server log for the operator.
+    assert any(r.exc_info and "internal-host" in str(r.exc_info[1]) for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
 # Route — auth
 # ---------------------------------------------------------------------------
 
