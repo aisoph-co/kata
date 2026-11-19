@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -54,6 +55,13 @@ from learning_service.extraction.sources import (
     load_release_notes_source,
 )
 from learning_service.main import get_extraction_client, require_operator
+
+logger = logging.getLogger(__name__)
+
+# The operator-facing message for a failed run. The exception itself is
+# logged server-side; its text (DB errors, file paths, upstream responses)
+# never goes back over the stream.
+INGEST_FAILED_MESSAGE = "Ingestion failed. Check the learning service logs for details."
 
 router = APIRouter()
 
@@ -243,8 +251,9 @@ async def run_ingestion(
         )
 
         yield _sse("done", {"course_id": course.id, "concept_count": len(drafts), "item_count": item_count})
-    except Exception as exc:  # noqa: BLE001 — surface it to the streaming client, don't 500 mid-stream
-        yield _sse("error", {"message": str(exc)})
+    except Exception:  # noqa: BLE001 — surface it to the streaming client, don't 500 mid-stream
+        logger.exception("ingestion run failed")
+        yield _sse("error", {"message": INGEST_FAILED_MESSAGE})
 
 
 @router.get("/admin/ingest")
